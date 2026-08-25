@@ -5,21 +5,29 @@
 
 ENTRY(_start)
 
+PHDRS
+{
+    text PT_LOAD FLAGS(5);      /* R+X */
+    data PT_LOAD FLAGS(6);      /* R+W */
+}
+
 SECTIONS
 {
     . = 0x40000000;
 
-    .text.boot : { KEEP(*(.text.boot)) }
+    .text.boot : { KEEP(*(.text.boot)) } :text
 
-    .text : { *(.text*) }
+    .vectors : { KEEP(*(.vectors)) } :text
 
-    .rodata : { *(.rodata*) }
+    .text : { *(.text*) } :text
 
-    .data : { *(.data*) }
+    .rodata : { *(.rodata*) } :text
+
+    .data : { *(.data*) } :data
 
     . = ALIGN(16);
     __bss_start = .;
-    .bss : { *(.bss*) *(COMMON) }
+    .bss : { *(.bss*) *(COMMON) } :data
     . = ALIGN(16);
     __bss_end = .;
 

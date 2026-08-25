@@ -8,6 +8,7 @@
 
 .global _start
 _start:
+    msr     daifset, #0xf           /* mask all exceptions until ready */
     /* x0 = current exception level number (1=EL1, 2=EL2, 3=EL3) */
     mrs     x0, CurrentEL
     lsr     x0, x0, #2

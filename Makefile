@@ -23,9 +23,10 @@ LDFLAGS := -T linker.ld -nostdlib
 SRCS_C := $(wildcard kernel/*.c drivers/*.c lib/*.c)
 SRCS_S := $(wildcard arch/aarch64/*.S)
 OBJS   := $(addprefix $(BUILD)/,$(SRCS_C:.c=.o) $(SRCS_S:.S=.o))
-DEPS   := $(OBJS:.o=.d)
+OBJS   += $(BUILD)/fdt_blob.o
+DEPS   := $(filter-out $(BUILD)/fdt_blob.o,$(OBJS:.o=.d))
 
-.PHONY: all run test debug clean
+.PHONY: all run test debug dtb clean
 
 all: $(KERNEL) $(IMG)
 
@@ -42,6 +43,15 @@ $(KERNEL): $(OBJS) linker.ld
 
 $(IMG): $(KERNEL)
 	$(OBJCOPY) -O binary $< $@
+
+$(BUILD)/fdt_blob.o: platform/qemu-virt.dtb
+	@mkdir -p $(dir $@)
+	$(OBJCOPY) -I binary -O elf64-littleaarch64 -B aarch64 \
+	    --rename-section .data=.rodata.fdt,alloc,load,readonly,data,contents $< $@
+
+dtb:
+	$(QEMU) -M virt -cpu cortex-a53 -m 128M -display none \
+	    -machine dumpdtb=platform/qemu-virt.dtb
 
 run: all
 	$(QEMU) $(QEMU_ARGS) -nographic -kernel $(KERNEL)

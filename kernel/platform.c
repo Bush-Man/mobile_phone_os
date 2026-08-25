@@ -1,0 +1,144 @@
+/*
+ * platform.c - extract boot-relevant facts from the device tree into
+ * a plain struct other subsystems can consume without knowing about FDT.
+ *
+ * The QEMU virt DTB is linked into the image as .rodata.fdt by the
+ * Makefile (objcopy of platform/qemu-virt.dtb); real boards will hand
+ * us the pointer in x1 instead and platform_self() gains a parameter.
+ */
+
+#include <stdint.h>
+
+#include "fdt.h"
+#include "platform.h"
+
+extern const uint8_t _binary_platform_qemu_virt_dtb_start[];
+extern const uint8_t _binary_platform_qemu_virt_dtb_end[];
+
+static void copy_str(char *dst, const char *src, int max)
+{
+    int i = 0;
+
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    while (src[i] && i < max - 1) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+/* assemble a u64 from 'cells' consecutive big-endian u32s */
+static uint64_t cells_u64(const uint32_t *p, int cells)
+{
+    uint64_t v = 0;
+
+    for (int i = 0; i < cells && i < 2; i++)
+        v = (v << 32) | fdt_u32(p + i);
+    return v;
+}
+
+static uint32_t root_cells(const struct fdt *f, const char *prop,
+                           uint32_t dflt)
+{
+    int len;
+    const void *v = fdt_getprop(f, fdt_find_node(f, "/"), prop, &len);
+
+    return (v && len == 4) ? fdt_u32(v) : dflt;
+}
+
+static void probe_memory(struct platform_info *pi, const struct fdt *f)
+{
+    int node = fdt_find_node(f, "/memory*");
+    int len;
+    const void *reg;
+    uint32_t ac = root_cells(f, "#address-cells", 2);
+    uint32_t sc = root_cells(f, "#size-cells", 2);
+
+    pi->ram_base = 0;
+    pi->ram_size = 0;
+    if (node < 0)
+        return;
+
+    reg = fdt_getprop(f, node, "reg", &len);
+    if (!reg || len < (int)(4 * (ac + sc)))
+        return;
+
+    pi->ram_base = cells_u64(reg, ac);
+    pi->ram_size = cells_u64((const uint32_t *)reg + ac, sc);
+}
+
+static void probe_serial(struct platform_info *pi, const struct fdt *f)
+{
+    int node = fdt_find_node(f, "/soc/pl011*");
+    int len;
+    const void *reg;
+
+    pi->has_uart = 0;
+    if (node < 0)
+        node = fdt_find_node(f, "/soc/serial*");
+    if (node < 0)
+        return;
+
+    reg = fdt_getprop(f, node, "reg", &len);
+    if (!reg || len < 4)
+        return;
+
+    /* address fits in one cell on every supported SoC so far (< 4 GiB) */
+    pi->uart_base = fdt_u32(reg);
+    pi->has_uart  = 1;
+}
+
+static void probe_chosen(struct platform_info *pi, const struct fdt *f)
+{
+    int node = fdt_find_node(f, "/chosen");
+    int len;
+    const void *ba;
+
+    pi->has_boot_args = 0;
+    if (node < 0)
+        return;
+
+    ba = fdt_getprop(f, node, "bootargs", &len);
+    if (ba && len > 0) {
+        copy_str(pi->boot_args, ba,
+                 len < PLATFORM_BOOTARGS_MAX ? len : PLATFORM_BOOTARGS_MAX);
+        pi->has_boot_args = 1;
+    }
+}
+
+void platform_probe(struct platform_info *pi, const struct fdt *f)
+{
+    int root = fdt_find_node(f, "/");
+    int len;
+    const void *model;
+
+    copy_str(pi->model, "", PLATFORM_MODEL_MAX);
+    if (root >= 0) {
+        model = fdt_getprop(f, root, "model", &len);
+        if (model && len > 0)
+            copy_str(pi->model, model, PLATFORM_MODEL_MAX);
+    }
+
+    probe_memory(pi, f);
+    probe_serial(pi, f);
+    probe_chosen(pi, f);
+}
+
+void platform_self(struct platform_info *pi)
+{
+    struct fdt f;
+
+    if (fdt_init(&f, (uintptr_t)_binary_platform_qemu_virt_dtb_start) != 0) {
+        copy_str(pi->model, "<bad dtb>", PLATFORM_MODEL_MAX);
+        pi->ram_base = 0;
+        pi->ram_size = 0;
+        pi->uart_base = 0;
+        pi->has_uart = 0;
+        pi->has_boot_args = 0;
+        return;
+    }
+    platform_probe(pi, &f);
+}

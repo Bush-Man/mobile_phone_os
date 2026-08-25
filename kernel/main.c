@@ -9,7 +9,7 @@
 #include "el.h"
 #include "exceptions.h"
 #include "lib.h"
-#include "mmu.h"
+#include "mm/vmm.h"
 #include "panic.h"
 #include "platform.h"
 #include "uart.h"
@@ -61,8 +61,8 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
         panic("kernel not loaded at its link address");
 
     /* 5. address translation + caches */
-    mmu_enable(plat.ram_base, plat.ram_size);
-    kprintf("bringup: MMU enabled, caches on (SCTLR.M=%d)\n", mmu_active());
+    vmm_init(&plat);
+    kprintf("bringup: memory management up (TTBR0/TTBR1 + caches on)\n");
 
     kprintf("%s\n", BANNER);
     for (;;)

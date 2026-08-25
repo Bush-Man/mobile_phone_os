@@ -21,7 +21,8 @@ CFLAGS := -Wall -Wextra -O2 -g \
 
 LDFLAGS := -T linker.ld -nostdlib
 
-SRCS_C := $(wildcard kernel/*.c drivers/*.c lib/*.c arch/aarch64/*.c)
+SRCS_C := $(wildcard kernel/*.c drivers/*.c lib/*.c mm/*.c \
+           arch/aarch64/*.c)
 SRCS_S := $(wildcard arch/aarch64/*.S)
 OBJS   := $(addprefix $(BUILD)/,$(SRCS_C:.c=.o) $(SRCS_S:.S=.o))
 OBJS   += $(BUILD)/fdt_blob.o

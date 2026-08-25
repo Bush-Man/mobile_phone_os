@@ -72,23 +72,29 @@ static void probe_memory(struct platform_info *pi, const struct fdt *f)
 
 static void probe_serial(struct platform_info *pi, const struct fdt *f)
 {
-    int node = fdt_find_node(f, "/soc/pl011*");
+    /* node placement varies by SoC/firmware: direct child of root on
+     * current QEMU virt, under /soc elsewhere */
+    static const char *paths[] = {
+        "/pl011*", "/soc/pl011*", "/serial*", "/soc/serial*",
+    };
     int len;
     const void *reg;
 
     pi->has_uart = 0;
-    if (node < 0)
-        node = fdt_find_node(f, "/soc/serial*");
-    if (node < 0)
-        return;
+    for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        int node = fdt_find_node(f, paths[i]);
 
-    reg = fdt_getprop(f, node, "reg", &len);
-    if (!reg || len < 4)
+        if (node < 0)
+            continue;
+        reg = fdt_getprop(f, node, "reg", &len);
+        /* need at least #address-cells words for the base */
+        if (!reg || len < 4)
+            continue;
+        pi->uart_base = cells_u64(reg,
+                                  (int)root_cells(f, "#address-cells", 1));
+        pi->has_uart  = 1;
         return;
-
-    /* address fits in one cell on every supported SoC so far (< 4 GiB) */
-    pi->uart_base = fdt_u32(reg);
-    pi->has_uart  = 1;
+    }
 }
 
 static void probe_chosen(struct platform_info *pi, const struct fdt *f)

@@ -12,7 +12,8 @@ QEMU       ?= qemu-system-aarch64
 QEMU_ARGS  := -M virt -cpu cortex-a53 -m 128M
 
 CFLAGS := -Wall -Wextra -O2 -g \
-          -ffreestanding -fno-builtin -fno-stack-protector \
+          -ffreestanding -fno-builtin \
+          -fstack-protector-strong -mstack-protector-guard=global \
           -fno-pic -nostdlib \
           -march=armv8-a -mgeneral-regs-only \
           -Iinclude -Idrivers -Ikernel \
@@ -20,7 +21,7 @@ CFLAGS := -Wall -Wextra -O2 -g \
 
 LDFLAGS := -T linker.ld -nostdlib
 
-SRCS_C := $(wildcard kernel/*.c drivers/*.c lib/*.c)
+SRCS_C := $(wildcard kernel/*.c drivers/*.c lib/*.c arch/aarch64/*.c)
 SRCS_S := $(wildcard arch/aarch64/*.S)
 OBJS   := $(addprefix $(BUILD)/,$(SRCS_C:.c=.o) $(SRCS_S:.S=.o))
 OBJS   += $(BUILD)/fdt_blob.o
@@ -60,7 +61,7 @@ test: all
 	@rm -f $(BUILD)/serial.log
 	@timeout 5 $(QEMU) $(QEMU_ARGS) -display none -monitor none \
 	    -serial file:$(BUILD)/serial.log -kernel $(KERNEL) || true
-	@grep -q "\[OK\] mobile_phone_os phase 0" $(BUILD)/serial.log && \
+	@grep -q "\[OK\] mobile_phone_os phase 1" $(BUILD)/serial.log && \
 	    echo "SMOKE TEST: PASS" || \
 	    { echo "SMOKE TEST: FAIL"; cat $(BUILD)/serial.log 2>/dev/null; exit 1; }
 

@@ -7,7 +7,8 @@
 #include "lib.h"
 #include "panic.h"
 
-uintptr_t __stack_chk_guard;
+/* non-zero before any protected function runs; randomized in later phases */
+uintptr_t __stack_chk_guard = 0x5f6cfa7d9e62b415ULL;
 
 void panic(const char *msg)
 {

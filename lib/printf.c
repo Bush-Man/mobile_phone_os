@@ -13,6 +13,8 @@
 
 static void put_str(const char *s)
 {
+    if (!s)
+        s = "(null)";
     while (*s)
         uart_putc(*s++);
 }

@@ -99,8 +99,9 @@ static void skip_subtree(const struct fdt *f, const uint32_t **curp)
             (*curp)++;
             break;
         case FDT_PROP:
-            *curp += 2 + (fdt_u32(*curp) + 3) / 4;
+            *curp += 3 + (fdt_u32(*curp + 1) + 3) / 4;
             break;
+
         default:
             (*curp)++;
             break;
@@ -135,7 +136,7 @@ static int scan_contents(const struct fdt *f, const uint32_t **curp,
             break;
 
         case FDT_PROP:
-            *curp += 2 + (fdt_u32(*curp) + 3) / 4;
+            *curp += 3 + (fdt_u32(*curp + 1) + 3) / 4;
             break;
 
         case FDT_END_NODE:
@@ -203,7 +204,9 @@ int fdt_find_node(const struct fdt *f, const char *path)
 const void *fdt_getprop(const struct fdt *f, int node_off,
                         const char *name, int *len_out)
 {
-    const uint32_t *cur = f->st + node_off / 4;
+    /* node_off is an offset into the whole blob, not the struct block */
+    const uint32_t *cur = (const uint32_t *)((const uint8_t *)f->hdr +
+                                             node_off);
     const char *node_name = (const char *)(cur + 1);
 
     if (fdt_u32(cur) != FDT_BEGIN_NODE)
@@ -216,16 +219,16 @@ const void *fdt_getprop(const struct fdt *f, int node_off,
             break;
 
         case FDT_PROP: {
-            uint32_t len     = fdt_u32(cur);
-            uint32_t nameoff = fdt_u32(cur + 1);
+            uint32_t len     = fdt_u32(cur + 1);
+            uint32_t nameoff = fdt_u32(cur + 2);
             const char *pname = f->strings + nameoff;
 
             if (s_cmp(pname, name) == 0) {
                 if (len_out)
                     *len_out = (int)len;
-                return cur + 2;
+                return cur + 3;
             }
-            cur += 2 + (len + 3) / 4;
+            cur += 3 + (len + 3) / 4;
             break;
         }
 

@@ -29,7 +29,7 @@ USER_CFLAGS := -Wall -Wextra -O2 -g \
                -fno-pic -fno-pie \
                -march=armv8-a -mgeneral-regs-only
 
-SRCS_C := $(wildcard kernel/*.c drivers/*.c lib/*.c mm/*.c \
+SRCS_C := $(wildcard kernel/*.c drivers/*.c lib/*.c mm/*.c fs/*.c \
            arch/aarch64/*.c)
 SRCS_S := $(wildcard arch/aarch64/*.S)
 OBJS   := $(addprefix $(BUILD)/,$(SRCS_C:.c=.o) $(SRCS_S:.S=.o))

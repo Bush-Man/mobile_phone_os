@@ -29,6 +29,7 @@ void irq_time_selftest(void);
 void sched_selftest(void);
 void sched_demo_start(void);
 void phase6_init(const struct platform_info *plat);
+void phase7_init(const struct platform_info *plat);
 
 static void housekeeping_task(void *arg)
 {
@@ -180,6 +181,14 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
      * "drvtest" task once the schedulers start (see docs/PHASE_6.md).
      */
     phase6_init(&plat);
+
+    /*
+     * Phase 7: filesystems. Registers ramfs/devfs/vfat/ext2, mounts
+     * the in-memory root and /dev, and spawns "fstest" (which also
+     * negotiates the disk layout, mounts vfat + ext2 partitions and
+     * proves file persistence across reboots -- see docs/PHASE_7.md).
+     */
+    phase7_init(&plat);
 
     kprintf("%s\n", BANNER);
 

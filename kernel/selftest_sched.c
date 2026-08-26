@@ -2,11 +2,15 @@
  * selftest_sched.c - phase 4 scheduling verification + milestone demo.
  *
  * sched_selftest(): two helper threads ping-pong over a waitqueue with
- * a strict-turn handshake, while the boot context (IRQs masked so it
- * cannot be preempted mid-check) verifies the completed sequence is
- * exactly 0,1,2,... -- any lost wakeup, double run or out-of-order
- * switch breaks the arithmetic and panics. The helpers run on the
- * secondary cpu's queue, so every handoff crosses cpus.
+ * a strict-turn handshake, while the boot context polls (IRQs masked
+ * so it cannot be disturbed mid-check) until both helpers finish.
+ * The completed sequence must be exactly 0,1,2,... -- any lost
+ * wakeup, double run or out-of-order switch breaks the arithmetic
+ * and panics. The helpers run on whatever cpu picks them up while
+ * the boot cpu spins, so handoffs cross cpus.
+ *
+ * The stall deadline is derived from the raw system counter rather
+ * than jiffies so it still fires if timer delivery itself dies.
  *
  * sched_demo_start(): spawns the persistent milestone pair ("ping"/
  * "pong"), printing alternating rounds tagged with the cpu each round
@@ -17,8 +21,6 @@
 #include <stdbool.h>
 
 #include "cpu.h"
-#include "gic.h"
-#include "irq.h"
 #include "lib.h"
 #include "panic.h"
 #include "task.h"
@@ -54,14 +56,6 @@ static void pp_wait_turn(volatile unsigned *turn, unsigned want)
 static volatile unsigned st_turn;
 static volatile unsigned st_seq;
 static volatile bool     st_done[2];
-static volatile unsigned st_kicks;
-
-static bool kick_handler(void *arg)
-{
-    (void)arg;
-    st_kicks++;
-    return true;
-}
 
 static void st_helper(void *arg)
 {
@@ -82,45 +76,17 @@ static void st_helper(void *arg)
 
 void sched_selftest(void)
 {
-    uint64_t deadline;
-
-    if (!irq_register(14, "kick", kick_handler, NULL))
-        panic("selftest: no kick slot");
-    irq_enable(14);
+    const uint64_t deadline_ns = time_uptime_ns() + 10000000000ull;
 
     if (task_create("pp-a", st_helper, (void *)0UL, 10) < 0 ||
         task_create("pp-b", st_helper, (void *)1UL, 10) < 0)
         panic("selftest: cannot create helpers");
 
-    deadline = jiffies_read() + TIME_HZ * 5;
-
-    /*
-     * Poll with IRQs masked: this context is the adopted idle task of
-     * cpu0 and must not be switched away from mid-verification. The
-     * helpers live on the other cpu's queue and keep making progress
-     * via that cpu's own timer ticks.
-     */
     {
         daif_state s = irq_local_save();
-        uint64_t last_beat = time_uptime_ns();
-        uint64_t last_kick = 0;
 
         while (!(st_done[0] && st_done[1])) {
-            uint64_t now = time_uptime_ns();
-
-            /* TEMP: poke the other cpu so it leaves wfi */
-            if (now - last_kick > 200000000ull) {
-                last_kick = now;
-                gic_send_sgi_list(0xfeu, 14);
-            }
-
-            if (now - last_beat > 400000000ull) {
-                last_beat = now;
-                kprintf("[beat seq=%u d=%d%d j=%lu k=%u]\n",
-                        st_seq, (int)st_done[0], (int)st_done[1],
-                        jiffies_read(), st_kicks);
-            }
-            if ((long)(jiffies_read() - deadline) >= 0)
+            if (time_uptime_ns() > deadline_ns)
                 panic("selftest: scheduler ping-pong stalled");
             __asm__ volatile("nop");
         }

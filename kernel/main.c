@@ -9,7 +9,6 @@
 #include "gic.h"
 #include "irq.h"
 #include "lib.h"
-#include "mmio.h"
 #include "mm/kheap.h"
 #include "mm/pmm.h"
 #include "mm/vmm.h"
@@ -29,6 +28,27 @@ void irq_time_selftest(void);
 void sched_selftest(void);
 void sched_demo_start(void);
 
+static void housekeeping_task(void *arg)
+{
+    unsigned long mark = 0;
+    uint64_t ms;
+    (void)arg;
+
+    for (;;) {
+        tasklet_drain();                /* bottom halves here       */
+
+        /* one uptime line per second */
+        if ((long)(jiffies_read() - mark) >= TIME_HZ) {
+            mark += TIME_HZ;
+            ms = time_uptime_ms();
+            kprintf("time: %llu.%03llu s uptime\n",
+                    (unsigned long long)(ms / 1000u),
+                    (unsigned long long)(ms % 1000u));
+        }
+        msleep(2);
+    }
+}
+
 extern const struct platform_info *smp_plat;
 
 #define BANNER "[OK] mobile_phone_os phase 4"
@@ -40,7 +60,6 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
     struct kheap_stats ks;
     struct irq_stats is;
     struct tasklet_stats ts;
-    unsigned long mark = 0;
 
     (void)dtb_ptr;
 
@@ -109,10 +128,11 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
             (unsigned long long)ts.ran);
 
     /*
-     * Phase 4: scheduler + secondaries. The boot cpu adopts idle0,
-     * releases cpu1 (which activates its own MMU/GIC/timer and
-     * adopts idle1), then verifies cross-cpu ping-pong before the
-     * milestone demo threads take the stage.
+     * Phase 4: scheduler + secondaries. cpu1 is released out of the
+     * firmware PSCI parking pen (it brings up its own MMU/GIC/timer,
+     * then runs its scheduler loop), after which the strict
+     * cross-cpu ping-pong selftest runs before the milestone demo
+     * threads take the stage.
      */
     sched_init();
     smp_plat = &plat;
@@ -127,21 +147,13 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
     kprintf("%s\n", BANNER);
 
     sched_demo_start();                     /* ping vs pong forever-ish */
+    task_create("housekeep", housekeeping_task, NULL, 50);
 
-    /* kmain lives on as cpu0's idle task from here */
-    for (;;) {
-        uint64_t ms;
-
-        tasklet_drain();                    /* bottom halves here       */
-
-        /* one uptime line per second; preemption handles the rest */
-        if ((long)(jiffies_read() - mark) >= TIME_HZ) {
-            mark += TIME_HZ;
-            ms = time_uptime_ms();
-            kprintf("time: %llu.%03llu s uptime\n",
-                    (unsigned long long)(ms / 1000u),
-                    (unsigned long long)(ms % 1000u));
-        }
-        __asm__ volatile("wfi");
-    }
+    /*
+     * Boot context retires here: cpu0 (and each secondary, from its
+     * own secondary_start) runs a per-cpu scheduler loop that owns
+     * all dispatch decisions from this point on.
+     */
+    kprintf("boot: entering per-cpu schedulers\n");
+    sched_run(0);
 }

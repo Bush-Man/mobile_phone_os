@@ -1,24 +1,26 @@
 /*
- * sched.c - priority round-robin scheduler.
+ * sched.c - priority round-robin scheduler with per-cpu scheduler
+ * contexts (xv6-style).
  *
- * One shared run-queue: pick_next scans the (small) static task table
- * for the READY task with the best (lowest) priority, breaking ties by
- * arrival order -- that is round-robin among equals and, because every
- * cpu pulls from the same table, it doubles as basic load balancing
- * with zero migration logic.
+ * Every cpu runs sched_run() on a dedicated scheduler stack. Tasks
+ * never switch between themselves: parking a task saves its context
+ * into its own struct and jumps to the scheduler context, which then
+ * picks the next READY task under the shared state lock and loads
+ * it. Because a task's context is only ever written while that task
+ * is actually executing, another cpu can safely pick it the moment
+ * it is marked READY.
  *
- * All scheduler state is guarded by one spinlock taken with IRQs
- * masked; the timer top half only sets need_resched and the actual
- * switch happens on the exception return path after EOIs are done, so
- * no interrupt stays active across a context switch.
+ * One lock guards all state transitions. The per-cpu idle role is
+ * played by the scheduler loop itself: when nothing is READY it
+ * drops to WFI until the next interrupt (timer tick at worst).
  */
 
 #include <stdint.h>
 #include <stddef.h>
 
+#include "cpu.h"
 #include "irq.h"
 #include "lib.h"
-#include "mmio.h"
 #include "panic.h"
 #include "spinlock.h"
 #include "task.h"
@@ -26,9 +28,13 @@
 
 struct per_cpu cpus[NR_CPUS];
 
+/* dedicated stacks for the per-cpu scheduler contexts */
+static uint8_t sched_stacks[NR_CPUS][4 * 1024]
+    __attribute__((aligned(16)));
+
 #define SCHED_QUANTUM 5         /* ticks (50 ms) before round-robin */
 
-/* shared state plumbing from kernel/task.c */
+/* shared state plumbing defined in kernel/task.c */
 extern spinlock_t task_state_lock;
 uint64_t task_next_key(void);
 
@@ -55,56 +61,52 @@ static struct task *pick_next(void)
     return best;
 }
 
-void schedule(void)
+void sched_init(void)
 {
-    struct per_cpu *pc = this_cpu();
-    daif_state s;
-    struct task *prev, *next;
+    for (uint64_t c = 0; c < NR_CPUS; c++) {
+        cpus[c].sched_ctx.sp =
+            (uint64_t)(uintptr_t)sched_stacks[c] +
+            sizeof(sched_stacks[c]);
+        cpus[c].sched_ctx.lr = 0;
+        cpus[c].current = NULL;
+    }
+}
 
-    /*
-     * The lock spans the WHOLE switch: prev stays unpickable until
-     * its callee-saved context is fully written, and the incoming
-     * task resumes exactly here (inside its own old schedule()
-     * frame) to release the same lock. Unlocking before the save
-     * would let another cpu pick up a half-saved context.
-     */
-    spin_lock_irqsave(&task_state_lock, &s);
+/*
+ * Per-cpu scheduler/idle body. Runs on its own stack; every task
+ * parks here via sched_park() and is dispatched out from here.
+ */
+void sched_run(uint64_t cpu)
+{
+    struct per_cpu *pc = &cpus[cpu];
 
-    prev = pc->current;
-    if (!prev)
-        panic("schedule without a current task");
-    next = pick_next();
+    for (;;) {
+        daif_state s;
+        struct task *next;
 
-    if (!next) {
-        /* nothing runnable: stay where we are (idle keeps polling) */
+        spin_lock_irqsave(&task_state_lock, &s);
+        next = pick_next();
+        if (next) {
+            next->state = TASK_RUNNING;
+            next->quantum_left = SCHED_QUANTUM;
+            pc->current = next;
+        }
         spin_unlock_irqrestore(&task_state_lock, s);
-        return;
+
+        if (!next) {
+            __asm__ volatile("wfi");
+            continue;
+        }
+
+        cpu_switch_to(&pc->sched_ctx, &next->ctx);
+        /* back: that task parked itself again */
     }
-
-    if (next != prev) {
-        if (prev->state == TASK_RUNNING)
-            prev->state = TASK_READY;
-
-        next->state = TASK_RUNNING;
-        pc->current = next;
-        pc->switches++;
-    }
-    next->quantum_left = SCHED_QUANTUM;
-    pc->need_resched = false;
-
-    cpu_switch_to(prev, next);
-
-    /* resumed as `next` (or fell through switching to ourselves) */
-    spin_unlock_irqrestore(&task_state_lock, s);
 }
 
 /* ---- timer-tick side ------------------------------------------------------- */
 
-static bool temp_preempt_off = true;
-
 void sched_tick(void)
 {
-    if (temp_preempt_off) return;
     struct per_cpu *pc = this_cpu();
     daif_state s;
 
@@ -134,86 +136,22 @@ void sched_tick(void)
 
 void sched_post_irq(void)
 {
-    if (temp_preempt_off) return;
     struct per_cpu *pc = this_cpu();
+    daif_state s;
 
-    if (pc->need_resched && pc->current) {
-        pc->need_resched = false;
-        schedule();
-    }
-}
+    /*
+     * Preemption point on the way out of an interrupt: everything
+     * is already EOIed, so parking the interrupted task here cannot
+     * strand controller state across the switch.
+     */
+    if (!pc->need_resched || !pc->current)
+        return;
+    pc->need_resched = false;
 
-/* ---- init --------------------------------------------------------------------- */
+    spin_lock_irqsave(&task_state_lock, &s);
+    pc->current->state = TASK_READY;
+    pc->current->rq_key = task_next_key();
+    spin_unlock_irqrestore(&task_state_lock, s);
 
-/*
- * Idle tasks occupy fixed slots 0..NR_CPUS-1. They are never
- * "created" with a crafted context: each cpu adopts its idle task
- * directly (boot cpu in kmain, secondaries in secondary_start), so
- * the first switch away simply snapshots the live frame.
- */
-void sched_init(void)
-{
-    for (uint64_t c = 0; c < NR_CPUS; c++) {
-        struct task *t = &tasks[IDLE_TASK_BASE + c];
-
-        memset(t, 0, sizeof(*t));
-        t->state  = TASK_READY;
-        t->prio   = TASK_IDLE_PRIO;
-        t->rq_key = task_next_key();
-        t->name   = (c == 0) ? "idle0" : "idle1";
-    }
-
-    /* boot cpu adopts its idle task right away */
-    cpus[0].current = &tasks[IDLE_TASK_BASE];
-    tasks[IDLE_TASK_BASE].state = TASK_RUNNING;
-}
-
-/* ---- idle -------------------------------------------------------------------- */
-
-/*
- * The per-cpu idle "thread": runs as a real task at the lowest
- * priority so the shared run queue naturally drains to it. WFI sleeps
- * until the next interrupt (timer tick or device line).
- */
-void idle_loop(void)
-{
-    uint64_t last_counter = time_counter_value();
-    unsigned long last_jiffies = jiffies_read();
-    bool dumped = false;
-
-    for (;;) {
-        schedule();
-
-        /* TEMP: detect "timer died" state and dump controller regs */
-        {
-            uint64_t now = time_counter_value();
-            unsigned long j = jiffies_read();
-
-            if (!dumped && now - last_counter > time_counter_hz() / 5 &&
-                j == last_jiffies) {
-                dumped = true;
-                {
-                    uint64_t ctl;
-                    __asm__ volatile("mrs %0, cntv_ctl_el0"
-                                     : "=r"(ctl));
-                    kprintf("[idle%llu stall: j=%lu ctl=%llx ist=%d "
-                            "isen0=%08x ispend0=%08x rpr=%08x "
-                            "hppir=%08x]\n",
-                            (unsigned long long)cpu_id(), j,
-                            (unsigned long long)ctl,
-                            (int)((ctl >> 2) & 1),
-                            mmio_read32(0x08000000u + 0x100u),
-                            mmio_read32(0x08000000u + 0x200u),
-                            mmio_read32(0x08010000u + 0x014u),
-                            mmio_read32(0x08010000u + 0x018u));
-                }
-            }
-            if (now - last_counter > time_counter_hz() / 5) {
-                last_counter = now;
-                last_jiffies = j;
-            }
-        }
-
-        __asm__ volatile("wfi");
-    }
+    sched_park();                   /* through the scheduler context */
 }

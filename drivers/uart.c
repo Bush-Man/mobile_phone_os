@@ -212,3 +212,17 @@ void uart_rx_irq_init(unsigned intid)
     mmio_write32(UART0_BASE + UART_IMSC, INT_RX | INT_RT);
     irq_enable(intid);
 }
+
+/*
+ * Kernel-side drain of the RX ring (phase 5 console read): copies up
+ * to max bytes out for the caller, without echoing. Used by the
+ * SYS_read path; returns how many bytes were taken.
+ */
+unsigned uart_rx_read(char *dst, unsigned max)
+{
+    unsigned n = 0;
+
+    while (n < max && rx_pop(&dst[n]))
+        n++;
+    return n;
+}

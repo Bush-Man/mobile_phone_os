@@ -45,6 +45,27 @@ int  vmm_map(vaddr_t va, paddr_t pa, unsigned flags);
 int  vmm_unmap(vaddr_t va);
 bool vmm_translate(vaddr_t va, paddr_t *pa_out);
 
+/* ---- per-process address spaces (phase 5) -------------------------------- */
+
+/* root-table management: index 0 of every root is the shared,
+ * TLB-global kernel identity subtree; user mappings live under
+ * indices [USER_L0_LO, USER_L0_HI) */
+paddr_t vmm_kernel_root(void);
+paddr_t vmm_shared_l1(void);
+paddr_t vmm_root_alloc(void);           /* zeroed root + shared splice */
+void    vmm_root_release(paddr_t root, unsigned l0_lo, unsigned l0_hi);
+void    vmm_root_free(paddr_t root);
+
+unsigned vmm_decode_flags(uint64_t desc);
+bool    vmm_probe(paddr_t root, vaddr_t va, paddr_t *pa_out,
+                  unsigned *flags_out);
+int     vmm_map_at(paddr_t root, vaddr_t va, paddr_t pa, unsigned flags);
+int     vmm_unmap_at(paddr_t root, vaddr_t va);
+
+/* fork(): deep-copy user pages of [l0_lo, l0_hi) from src into dst */
+int     vmm_copy_space(paddr_t dst_root, paddr_t src_root,
+                       unsigned l0_lo, unsigned l0_hi);
+
 /* SMP: apply the boot cpu's MMU config on a secondary; clean the
  * kernel image to DRAM so cache-cold secondaries can start */
 void vmm_cpu_activate(void);

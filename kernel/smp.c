@@ -29,7 +29,6 @@
 #include "smp.h"
 #include "task.h"
 #include "time.h"
-#include "time.h"
 #include "mm/vmm.h"
 
 #define PSCI_RET_SUCCESS 0
@@ -59,8 +58,6 @@ static int64_t psci_call(uint64_t fn, uint64_t a0, uint64_t a1,
                          : "memory");
     return (int64_t)r0;
 }
-
-/* filled by main before smp_init() */
 
 void smp_init(void)
 {
@@ -105,31 +102,8 @@ void secondary_start(uint64_t cpu)
     cpus[cpu].online = true;
     kprintf("smp: cpu%llu online\n", (unsigned long long)cpu);
 
-    /* TEMP diagnostics: does this cpu's timer tick at all? */
-    {
-        uint64_t t0 = time_counter_value();
-        unsigned long j0 = jiffies_read();
-
-        while (time_counter_value() - t0 < time_counter_hz() / 20)
-            ;
-        {
-            uint64_t ctl;
-
-            __asm__ volatile("mrs %0, cntv_ctl_el0" : "=r"(ctl));
-            kprintf("[c%llu ctl=%llx ist=%d jdelta=%lu isen0=%08x "
-                    "giccctlr=%08x]\n",
-                    (unsigned long long)cpu,
-                    (unsigned long long)ctl, (int)((ctl >> 2) & 1),
-                    jiffies_read() - j0,
-                    mmio_read32(0x08000000u + 0x100u),
-                    mmio_read32(0x08010000u + 0x000u));
-        }
-    }
-
-    /* adopt this cpu's idle task and enter the shared run queue */
-    cpus[cpu].current = &tasks[IDLE_TASK_BASE + cpu];
-    tasks[IDLE_TASK_BASE + cpu].state = TASK_RUNNING;
-    idle_loop();
+    /* become this cpu's scheduler/idle context */
+    sched_run(cpu);
 
 park:
     for (;;)

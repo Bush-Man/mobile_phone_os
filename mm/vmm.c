@@ -121,6 +121,23 @@ static uint64_t table_desc(paddr_t table_pa)
     return PTE_VALID | PTE_TABLE | table_pa;
 }
 
+/* decode a stage-1 leaf back into VM_* flags (uaccess / fork walks) */
+unsigned vmm_decode_flags(uint64_t desc)
+{
+    unsigned fl = VM_READ;
+    uint64_t ap = (desc >> 6) & 3ull;   /* AP[2:1]                    */
+
+    if (!(ap & 2ull))                   /* AP[1] = 0 -> read/write    */
+        fl |= VM_WRITE;
+    if (ap & 1ull)                      /* AP[2] = 1 -> EL0 allowed   */
+        fl |= VM_USER;
+    if (!((desc >> 54) & 1ull))         /* UXN clear -> executable    */
+        fl |= VM_EXEC;
+    if (((desc >> 2) & 3ull) == ATTR_DEVICE)
+        fl |= VM_DEVICE;
+    return fl;
+}
+
 void tlb_flush_all(void)
 {
     __asm__ volatile("tlbi vmalle1is");
@@ -480,4 +497,305 @@ void vmm_sync_kernel_to_ram(void)
         sdst[w] = ssrc[w];
 
     __asm__ volatile("dsb sy");
+}
+
+/* ---- process address spaces (phase 5) ------------------------------------- */
+
+#define VMM_ERR_NOMEM (-5)              /* frame exhaustion            */
+#define VMM_ERR_BLOCK (-6)              /* block descriptor: unsupported */
+
+/*
+ * The lower half splits in two: L0 index 0 holds the kernel's
+ * identity-mapped RAM/devices (EL1-only, non-global -> shared by
+ * every address space, TLB-global so ASID switches never disturb
+ * it), while indices USER_L0_LO..USER_L0_HI belong to the process
+ * and are rebuilt per exec.
+ */
+paddr_t vmm_kernel_root(void)
+{
+    return (paddr_t)(uintptr_t)lower_l0;
+}
+
+paddr_t vmm_shared_l1(void)
+{
+    return (paddr_t)(uintptr_t)lower_l1;
+}
+
+paddr_t vmm_root_alloc(void)
+{
+    paddr_t pa = pmm_alloc();
+    uint64_t *root;
+    unsigned i;
+
+    if (!pa)
+        return 0;
+
+    root = (uint64_t *)pa;              /* touched via identity map */
+    for (i = 0; i < PT_ENTRIES; i++)
+        root[i] = 0;
+    root[L0_IDX(0)] = table_desc(vmm_shared_l1());
+    return pa;
+}
+
+/* lock held: none -- post-boot teardown, single-threaded use for now */
+static void free_subtree(uint64_t *t, unsigned lvl)
+{
+    unsigned i;
+
+    for (i = 0; i < PT_ENTRIES; i++) {
+        uint64_t d = t[i];
+
+        if (!(d & PTE_VALID))
+            continue;
+        if ((d & PTE_TABLE) && lvl < 3) {
+            free_subtree(table_ptr(d), lvl + 1);
+        } else if (!(d & PTE_TABLE)) {
+            pmm_free(d & PT_ADDR_MASK);         /* data page or block */
+        }
+    }
+    pmm_free((paddr_t)(uintptr_t)t);
+}
+
+/*
+ * Release every mapping under root's L0 indices [lo, hi) -- tables,
+ * leaf pages and blocks. Index 0 (the shared kernel subtree) is
+ * never passed in by callers and is explicitly refused here.
+ */
+void vmm_root_release(paddr_t root_pa, unsigned lo, unsigned hi)
+{
+    uint64_t *root = (uint64_t *)root_pa;
+    unsigned i;
+
+    if (lo == 0)
+        lo = 1;                         /* never free the shared map */
+
+    for (i = lo; i < hi && i < PT_ENTRIES; i++) {
+        uint64_t d = root[i];
+
+        if (!(d & PTE_VALID))
+            continue;
+        if (d & PTE_TABLE)
+            free_subtree(table_ptr(d), 1);
+        else
+            pmm_free(d & PT_ADDR_MASK);
+        root[i] = 0;
+    }
+
+    tlb_flush_all();
+}
+
+void vmm_root_free(paddr_t root_pa)
+{
+    pmm_free(root_pa);
+}
+
+/*
+ * Map one 4 KiB page into an arbitrary root. Same walk as vmm_map()
+ * but parameterised by root table so it works on non-current
+ * address spaces (exec building a fresh image before switching).
+ */
+int vmm_map_at(paddr_t root_pa, vaddr_t va, paddr_t pa, unsigned flags)
+{
+    uint64_t *t = (uint64_t *)root_pa;
+    unsigned lvl;
+
+    if (!IS_ALIGNED(va, PAGE_SIZE) || !IS_ALIGNED(pa, PAGE_SIZE))
+        return -1;
+
+    for (lvl = 0; lvl < 3; lvl++) {
+        unsigned idx = (unsigned)((va >> level_shift[lvl]) &
+                                  (PT_ENTRIES - 1));
+        uint64_t d = t[idx];
+
+        if (!(d & PTE_VALID)) {
+            paddr_t nt = pmm_alloc();
+            uint64_t *zp;
+            unsigned z;
+
+            if (!nt)
+                return -2;
+            zp = (uint64_t *)nt;
+            for (z = 0; z < PT_ENTRIES; z++)
+                zp[z] = 0;
+            t[idx] = table_desc(nt);
+            t = table_ptr(t[idx]);
+        } else if (d & PTE_TABLE) {
+            t = table_ptr(d);
+        } else {
+            return -3;
+        }
+    }
+
+    if (t[L3_IDX(va)] & PTE_VALID)
+        return -4;
+    t[L3_IDX(va)] = leaf_desc(pa, flags);
+    return 0;
+}
+
+int vmm_unmap_at(paddr_t root_pa, vaddr_t va)
+{
+    uint64_t *t = (uint64_t *)root_pa;
+    unsigned lvl;
+
+    for (lvl = 0; lvl < 3; lvl++) {
+        uint64_t d = t[(va >> level_shift[lvl]) & (PT_ENTRIES - 1)];
+
+        if (!(d & PTE_VALID))
+            return -1;
+        if (!(d & PTE_TABLE)) {
+            t[(va >> level_shift[lvl]) & (PT_ENTRIES - 1)] = 0;
+            return 0;
+        }
+        t = table_ptr(d);
+    }
+
+    if (!(t[L3_IDX(va)] & PTE_VALID))
+        return -1;
+    t[L3_IDX(va)] = 0;
+    return 0;
+}
+
+/*
+ * Software walk of an arbitrary root: physical page plus decoded
+ * VM_* flags of whatever leaf covers va. This is what uaccess uses
+ * to validate user pointers against the CALLING process's tables,
+ * and what fork() uses to discover the mappings it must copy.
+ */
+bool vmm_probe(paddr_t root_pa, vaddr_t va, paddr_t *pa_out,
+               unsigned *flags_out)
+{
+    uint64_t *t = (uint64_t *)root_pa;
+    unsigned lvl;
+
+    for (lvl = 0; lvl < 3; lvl++) {
+        uint64_t d = t[(va >> level_shift[lvl]) & (PT_ENTRIES - 1)];
+
+        if (!(d & PTE_VALID))
+            return false;
+        if (!(d & PTE_TABLE)) {         /* block descriptor */
+            uint64_t off = (1ull << level_shift[lvl]) - 1;
+
+            if (pa_out)
+                *pa_out = (d & PT_ADDR_MASK) | (va & off);
+            if (flags_out)
+                *flags_out = vmm_decode_flags(d);
+            return true;
+        }
+        t = table_ptr(d);
+    }
+
+    {
+        uint64_t d = t[L3_IDX(va)];
+
+        if (!(d & PTE_VALID))
+            return false;
+        if (pa_out)
+            *pa_out = (d & PT_ADDR_MASK) | (va & (PAGE_SIZE - 1));
+        if (flags_out)
+            *flags_out = vmm_decode_flags(d);
+        return true;
+    }
+}
+
+/*
+ * fork() support: deep-copy every user page of src_root's L0 range
+ * [lo, hi) into dst_root, preserving permissions. Pages are copied
+ * eagerly through the identity alias (copy-on-write is deferred to
+ * a later phase and documented in docs/PHASE_5.md).
+ *
+ * Returns 0 or a negative errno-ish code. On failure the caller is
+ * expected to vmm_root_release() the destination.
+ */
+static int copy_level(const uint64_t *src, uint64_t *dst, unsigned lvl)
+{
+    unsigned i;
+
+    for (i = 0; i < PT_ENTRIES; i++) {
+        uint64_t d = src[i];
+        int r;
+
+        if (!(d & PTE_VALID)) {
+            dst[i] = 0;
+            continue;
+        }
+
+        if ((d & PTE_TABLE) && lvl < 3) {
+            paddr_t nt = pmm_alloc();
+
+            if (!nt)
+                return -VMM_ERR_NOMEM;
+            {
+                uint64_t *zp = (uint64_t *)nt;
+                unsigned z;
+
+                for (z = 0; z < PT_ENTRIES; z++)
+                    zp[z] = 0;
+            }
+            r = copy_level(table_ptr(d), (uint64_t *)nt, lvl + 1);
+            if (r) {
+                pmm_free(nt);
+                return r;
+            }
+            dst[i] = table_desc(nt);
+        } else {
+            /* leaf (or unexpected block): copy the backing memory */
+            unsigned fl = vmm_decode_flags(d);
+            paddr_t np, sp = d & PT_ADDR_MASK;
+            size_t bytes = (d & PTE_TABLE) ? PAGE_SIZE :
+                           ((size_t)1 << level_shift[lvl]);
+
+            /* blocks are not produced by our mapper; refuse them */
+            if (!(d & PTE_TABLE))
+                return -VMM_ERR_BLOCK;
+
+            np = pmm_alloc();
+            if (!np)
+                return -VMM_ERR_NOMEM;
+            memcpy((void *)(uintptr_t)np, (const void *)(uintptr_t)sp,
+                   bytes);
+            dst[i] = leaf_desc(np, fl);
+        }
+    }
+    return 0;
+}
+
+int vmm_copy_space(paddr_t dst_root, paddr_t src_root,
+                   unsigned lo, unsigned hi)
+{
+    const uint64_t *src = (const uint64_t *)src_root;
+    uint64_t *dst = (uint64_t *)dst_root;
+    unsigned i;
+
+    for (i = lo; i < hi && i < PT_ENTRIES; i++) {
+        uint64_t d = src[i];
+        int r;
+
+        if (!(d & PTE_VALID)) {
+            dst[i] = 0;
+            continue;
+        }
+        if (!(d & PTE_TABLE))
+            return -VMM_ERR_BLOCK;     /* block at L0: unsupported */
+
+        {
+            paddr_t nt = pmm_alloc();
+
+            if (!nt)
+                return -VMM_ERR_NOMEM;
+            {
+                uint64_t *zp = (uint64_t *)nt;
+                unsigned z;
+
+                for (z = 0; z < PT_ENTRIES; z++)
+                    zp[z] = 0;
+            }
+            r = copy_level(table_ptr(d), (uint64_t *)nt, 1);
+            if (r) {
+                pmm_free(nt);
+                return r;
+            }
+            dst[i] = table_desc(nt);
+        }
+    }
+    return 0;
 }

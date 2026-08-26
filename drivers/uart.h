@@ -22,4 +22,7 @@ void uart_panic_mode(void);     /* print without locks from fault paths */
  */
 void uart_rx_irq_init(unsigned intid);
 
+/* kernel-side drain of the RX ring (SYS_read); returns bytes taken */
+unsigned uart_rx_read(char *dst, unsigned max);
+
 #endif /* UART_H */

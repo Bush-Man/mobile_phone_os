@@ -1,11 +1,12 @@
 /*
- * task.c - tasks, kernel stacks and the task-table API.
+ * task.c - tasks, kernel stacks and blocking primitives.
  *
  * All tasks live in a static pool with statically allocated kernel
- * stacks -- no dynamic allocation on the task path yet. A new task's
- * context is crafted by hand: sp at the top of its stack, lr pointing
- * at task_first_entry(), so the first cpu_switch_to() "returns" into
- * the trampoline which calls the task body.
+ * stacks. A new task's context is crafted by hand: sp at the top of
+ * its stack, lr pointing at task_first_entry(), so the scheduler's
+ * first switch into it "returns" into the trampoline which calls the
+ * task body. Tasks leave the cpu only via sched_park() (through the
+ * per-cpu scheduler context) -- see task.h for why.
  */
 
 #include <stdint.h>
@@ -37,9 +38,6 @@ uint64_t task_next_key(void)
     return ++rq_seq;
 }
 
-/* defined in sched.c */
-void schedule(void);
-
 struct task *current_task(void)
 {
     return this_cpu()->current;
@@ -55,10 +53,7 @@ static struct task *alloc_task(void)
     return NULL;
 }
 
-/*
- * Caller must hold the scheduler lock. Crafts the context the first
- * switch into this task will restore.
- */
+/* caller must hold the scheduler lock */
 static void task_prime(struct task *t, const char *name,
                        void (*fn)(void *), void *arg, unsigned prio)
 {
@@ -70,7 +65,7 @@ static void task_prime(struct task *t, const char *name,
 
     t->state = TASK_READY;
     t->prio  = prio;
-    t->rq_key = ++rq_seq;
+    t->rq_key = task_next_key();
     t->quantum_left = 0;
     t->wake_at = 0;
     t->wq_next = NULL;
@@ -114,53 +109,65 @@ void task_first_entry(void)
 void task_exit(void)
 {
     daif_state s;
-
-    if (cpu_id() >= NR_CPUS)
-        panic("task_exit on unknown cpu");
+    struct per_cpu *pc = this_cpu();
 
     spin_lock_irqsave(&task_state_lock, &s);
-    {
-        struct task *t = this_cpu()->current;
-
-        if (!t)
-            panic("task_exit without current");
-        t->state = TASK_DEAD;
-    }
+    if (!pc->current)
+        panic("task_exit without current");
+    pc->current->state = TASK_DEAD;
     spin_unlock_irqrestore(&task_state_lock, s);
-    schedule();                     /* never returns */
+
+    sched_park();                   /* never returns */
     panic("task_exit resumed a dead task");
 }
 
 void task_yield(void)
 {
     daif_state s;
+    struct per_cpu *pc = this_cpu();
 
     spin_lock_irqsave(&task_state_lock, &s);
-    if (this_cpu()->current) {
-        this_cpu()->current->state = TASK_READY;
-        this_cpu()->current->rq_key = task_next_key();
-    }
+    if (!pc->current)
+        panic("task_yield without current");
+    pc->current->state = TASK_READY;
+    pc->current->rq_key = task_next_key();
     spin_unlock_irqrestore(&task_state_lock, s);
-    schedule();
+
+    sched_park();
 }
 
 /* ---- blocking primitives ------------------------------------------------ */
 
-static void block_current(enum task_state state)
+/*
+ * Park the current task with the given state and never return here:
+ * control goes to the per-cpu scheduler context, which picks the
+ * next task. Requires that state was already committed under the
+ * lock by the caller.
+ */
+void sched_park(void)
+{
+    struct per_cpu *pc = this_cpu();
+
+    if (!pc->current)
+        panic("sched_park without current");
+
+    cpu_switch_to(&pc->current->ctx, &pc->sched_ctx);
+    panic("sched_park resumed a parked task");
+}
+
+static void park_current(enum task_state state)
 {
     struct per_cpu *pc = this_cpu();
     daif_state s;
 
-    /* a task switched in via sched_post_irq legitimately runs inside
-     * an irq window (and may migrate between cpus), so the only
-     * meaningful precondition for blocking is that current exists */
     if (!pc->current)
-        panic("blocking call in irq or pre-scheduler context");
+        panic("blocking call before entering the scheduler");
 
     spin_lock_irqsave(&task_state_lock, &s);
     pc->current->state = state;
     spin_unlock_irqrestore(&task_state_lock, s);
-    schedule();
+
+    sched_park();
 }
 
 void msleep(uint64_t msecs)
@@ -173,10 +180,11 @@ void msleep(uint64_t msecs)
     }
 
     spin_lock_irqsave(&task_state_lock, &s);
-    this_cpu()->current->wake_at = jiffies_read() + msecs * TIME_HZ / 1000u;
+    this_cpu()->current->wake_at =
+        jiffies_read() + msecs * TIME_HZ / 1000u;
     spin_unlock_irqrestore(&task_state_lock, s);
 
-    block_current(TASK_SLEEPING);
+    park_current(TASK_SLEEPING);
 }
 
 void wait_sleep_when(task_cond_t cond, void *cond_ctx,
@@ -185,11 +193,8 @@ void wait_sleep_when(task_cond_t cond, void *cond_ctx,
     struct per_cpu *pc = this_cpu();
     daif_state s;
 
-    /* a task switched in via sched_post_irq legitimately runs inside
-     * an irq window (and may migrate between cpus), so the only
-     * meaningful precondition for blocking is that current exists */
     if (!pc->current)
-        panic("blocking call in irq or pre-scheduler context");
+        panic("blocking call before entering the scheduler");
 
     /*
      * Evaluate the predicate and enqueue atomically with respect to
@@ -209,30 +214,8 @@ void wait_sleep_when(task_cond_t cond, void *cond_ctx,
         t->state = TASK_BLOCKED;
     }
     spin_unlock_irqrestore(&task_state_lock, s);
-    schedule();
-}
 
-void wait_sleep(struct waitqueue *wq)
-{
-    struct per_cpu *pc = this_cpu();
-    daif_state s;
-
-    /* a task switched in via sched_post_irq legitimately runs inside
-     * an irq window (and may migrate between cpus), so the only
-     * meaningful precondition for blocking is that current exists */
-    if (!pc->current)
-        panic("blocking call in irq or pre-scheduler context");
-
-    spin_lock_irqsave(&task_state_lock, &s);
-    {
-        struct task *t = pc->current;
-
-        t->wq_next = wq->head;
-        wq->head = t;
-        t->state = TASK_BLOCKED;
-    }
-    spin_unlock_irqrestore(&task_state_lock, s);
-    schedule();
+    sched_park();
 }
 
 void wait_wake_all(struct waitqueue *wq)
@@ -254,6 +237,6 @@ void wait_wake_all(struct waitqueue *wq)
     }
     spin_unlock_irqrestore(&task_state_lock, s);
 
-    if (preempt)
+    if (preempt && this_cpu()->current)
         this_cpu()->need_resched = true;
 }

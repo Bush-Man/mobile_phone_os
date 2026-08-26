@@ -14,6 +14,7 @@ struct platform_info;
 #define TIME_HZ 100u
 
 void     time_init(const struct platform_info *plat);
+void     time_cpu_init(void);   /* per-cpu (banked) timer bring-up */
 
 uint32_t time_counter_hz(void);         /* raw system counter frequency */
 unsigned long jiffies_read(void);       /* ticks since boot, wraps      */

@@ -67,6 +67,10 @@ static uint64_t h_l1[PT_ENTRIES] __attribute__((aligned(4096)));
 static uint64_t h_l2[PT_ENTRIES] __attribute__((aligned(4096)));
 static uint64_t h_l3[2][PT_ENTRIES] __attribute__((aligned(4096)));
 
+/* configuration snapshot for secondary cpu activation */
+static uint64_t cpu_mair, cpu_tcr, cpu_ttbr0, cpu_ttbr1;
+static bool mmu_ready;
+
 static uint64_t *root_for(vaddr_t va)
 {
     return (va >> 63) ? upper_l0 : lower_l0;
@@ -392,4 +396,56 @@ void vmm_init(const struct platform_info *plat)
     __asm__ volatile("isb");
 
     tlb_flush_all();
+
+    /* remember the configuration for secondaries */
+    cpu_mair  = mair;
+    cpu_tcr   = tcr;
+    cpu_ttbr0 = (uint64_t)(uintptr_t)lower_l0;
+    cpu_ttbr1 = (uint64_t)(uintptr_t)upper_l0;
+    mmu_ready = true;
+}
+
+/* ---- SMP support ---------------------------------------------------------- */
+
+void vmm_cpu_activate(void)
+{
+    uint64_t sctlr;
+
+    if (!mmu_ready)
+        panic("vmm_cpu_activate before vmm_init");
+
+    __asm__ volatile("msr mair_el1, %0" :: "r"(cpu_mair));
+    __asm__ volatile("msr ttbr0_el1, %0" :: "r"(cpu_ttbr0));
+    __asm__ volatile("msr ttbr1_el1, %0" :: "r"(cpu_ttbr1));
+    __asm__ volatile("msr tcr_el1, %0" :: "r"(cpu_tcr));
+    __asm__ volatile("dsb sy");
+    __asm__ volatile("isb");
+
+    __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    sctlr |= (1ull << 12) | (1ull << 2) | (1ull << 0);
+    __asm__ volatile("msr sctlr_el1, %0" :: "r"(sctlr));
+    __asm__ volatile("isb");
+
+    tlb_flush_all();
+}
+
+/*
+ * Clean the whole kernel image out of the boot CPU's d-cache so a
+ * cache-cold secondary (MMU off = reads DRAM) sees the page tables,
+ * .data and .bss state built so far. Mailboxes written after this
+ * must be cleaned individually by their writer.
+ */
+void vmm_sync_kernel_to_ram(void)
+{
+    extern uint8_t _start[], _end[];
+    uintptr_t addr = (uintptr_t)_start & ~63UL;
+    uint64_t ctr, dminline;
+    const uintptr_t end = (uintptr_t)_end;
+
+    __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+    dminline = 4UL << ((ctr >> 16) & 0xf);      /* bytes per line */
+
+    for (; addr < end; addr += dminline)
+        __asm__ volatile("dc cvac, %0" :: "r"(addr));
+    __asm__ volatile("dsb sy");
 }

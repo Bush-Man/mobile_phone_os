@@ -40,6 +40,9 @@ enum task_state {
 #define MAX_TASKS       8
 #define TASK_IDLE_PRIO  0xffffu    /* loses to every real task      */
 
+/* slots 0..NR_CPUS-1 are reserved for the per-cpu idle tasks */
+#define IDLE_TASK_BASE  0
+
 struct task {
     struct cpu_context ctx;         /* must stay at offset 0        */
     volatile enum task_state state;

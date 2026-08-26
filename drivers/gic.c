@@ -50,6 +50,7 @@
 
 static uintptr_t gicd;
 static uintptr_t gicc;
+static uint32_t self_mask;      /* this cpu's GIC interface mask     */
 
 static uint32_t prio_word(unsigned prio)
 {
@@ -113,6 +114,18 @@ void gic_send_sgi(unsigned sgi)
     mmio_write32(gicd + GICD_SGIR, SGIR_FILTER_SELF | (sgi & 0xfu));
 }
 
+void gic_send_sgi_list(uint8_t iface_mask, unsigned sgi)
+{
+    /* TargetListFilter=0b00 forwards to the listed interfaces */
+    mmio_write32(gicd + GICD_SGIR,
+                 ((uint32_t)(iface_mask & 0xffu) << 16) | (sgi & 0xfu));
+}
+
+uint8_t gic_self_iface_mask(void)
+{
+    return (uint8_t)self_mask;
+}
+
 uint32_t gic_ack(void)
 {
     return mmio_read32(gicc + GICC_IAR);
@@ -133,7 +146,7 @@ static void dist_init(void)
     unsigned i;
 
     /* our own interface mask, read back from the banked SGI region */
-    uint32_t self_mask = mmio_read32(gicd + GICD_ITARGETSR) & 0xffu;
+    self_mask = mmio_read32(gicd + GICD_ITARGETSR) & 0xffu;
 
     mmio_write32(gicd + GICD_CTLR, 0);          /* quiesce first       */
 
@@ -175,6 +188,15 @@ static void cpu_init(void)
     /* pass every priority through the running threshold */
     mmio_write32(gicc + GICC_PMR, 0xffu);
     mmio_write32(gicc + GICC_CTLR, GICC_CTLR_ENABLE_GRP0);
+}
+
+/*
+ * Per-cpu (banked) bring-up: distributor init happens exactly once on
+ * the boot cpu; every secondary calls only this.
+ */
+void gic_cpu_init(void)
+{
+    cpu_init();
 }
 
 void gic_init(const struct platform_info *plat)

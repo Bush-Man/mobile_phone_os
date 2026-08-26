@@ -127,6 +127,31 @@ void sched_post_irq(void)
     }
 }
 
+/* ---- init --------------------------------------------------------------------- */
+
+/*
+ * Idle tasks occupy fixed slots 0..NR_CPUS-1. They are never
+ * "created" with a crafted context: each cpu adopts its idle task
+ * directly (boot cpu in kmain, secondaries in secondary_start), so
+ * the first switch away simply snapshots the live frame.
+ */
+void sched_init(void)
+{
+    for (uint64_t c = 0; c < NR_CPUS; c++) {
+        struct task *t = &tasks[IDLE_TASK_BASE + c];
+
+        memset(t, 0, sizeof(*t));
+        t->state  = TASK_READY;
+        t->prio   = TASK_IDLE_PRIO;
+        t->rq_key = ++rq_seq;
+        t->name   = (c == 0) ? "idle0" : "idle1";
+    }
+
+    /* boot cpu adopts its idle task right away */
+    cpus[0].current = &tasks[IDLE_TASK_BASE];
+    tasks[IDLE_TASK_BASE].state = TASK_RUNNING;
+}
+
 /* ---- idle -------------------------------------------------------------------- */
 
 /*

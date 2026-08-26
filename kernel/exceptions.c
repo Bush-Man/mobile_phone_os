@@ -5,11 +5,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "cpu.h"
 #include "exceptions.h"
 #include "irq.h"
 #include "lib.h"
 #include "mm/types.h"
 #include "panic.h"
+#include "task.h"
 
 extern uint8_t vectors_begin[];
 
@@ -49,10 +51,17 @@ void exceptions_handler(struct trap_frame *tf, unsigned kind)
 
     /*
      * IRQ/FIQ: hand to the interrupt framework, which acks, runs
-     * handlers and EOIs every pending line before we eret back.
+     * handlers and EOIs every pending line. Preemption happens only
+     * afterwards, on the way out (sched_post_irq), so no interrupt
+     * is ever left active across a context switch.
      */
     if (kind == EXC_IRQ || kind == EXC_FIQ) {
+        struct per_cpu *pc = this_cpu();
+
+        pc->in_irq = true;
         irq_dispatch();
+        sched_post_irq();
+        pc->in_irq = false;
         return;
     }
 

@@ -9,6 +9,7 @@
 #include "irq.h"
 #include "mmio.h"
 #include "panic.h"
+#include "spinlock.h"
 #include "tasklet.h"
 #include "uart.h"
 
@@ -52,6 +53,25 @@ void uart_init(void)
     mmio_write32(UART0_BASE + UART_LCRH, LCRH_FEN | LCRH_WLEN8);
     mmio_write32(UART0_BASE + UART_CR,
                  CR_UARTEN | CR_TXE | CR_RXE);
+}
+
+/*
+ * TX serialization: multi-line output (kprintf, echo tasklet) holds
+ * one spinlock for the whole call so concurrent cpus cannot interleave
+ * characters. Callers carry the DAIF state between begin/end.
+ */
+static spinlock_t tx_lock = SPINLOCK_INIT;
+
+void uart_tx_begin(daif_state *s)
+{
+    *s = irq_local_save();
+    spin_lock(&tx_lock);
+}
+
+void uart_tx_end(daif_state s)
+{
+    spin_unlock(&tx_lock);
+    irq_local_restore(s);
 }
 
 void uart_putc(char c)
@@ -122,13 +142,16 @@ static bool rx_pop(char *out)
 static void echo_tasklet(void *arg)
 {
     char c;
+    daif_state s;
 
     (void)arg;
+    uart_tx_begin(&s);
     while (rx_pop(&c)) {
         uart_putc(c);                       /* raw echo               */
         if (c == '\r')
             uart_putc('\n');                /* CR -> CRLF for logs    */
     }
+    uart_tx_end(s);
 }
 
 static bool uart_rx_irq(void *arg)

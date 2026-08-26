@@ -45,4 +45,9 @@ int  vmm_map(vaddr_t va, paddr_t pa, unsigned flags);
 int  vmm_unmap(vaddr_t va);
 bool vmm_translate(vaddr_t va, paddr_t *pa_out);
 
+/* SMP: apply the boot cpu's MMU config on a secondary; clean the
+ * kernel image to DRAM so cache-cold secondaries can start */
+void vmm_cpu_activate(void);
+void vmm_sync_kernel_to_ram(void);
+
 #endif /* MM_VMM_H */

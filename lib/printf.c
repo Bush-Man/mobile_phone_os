@@ -58,7 +58,9 @@ void kprintf(const char *fmt, ...)
 {
     va_list ap;
     const char *p;
+    daif_state s;
 
+    uart_tx_begin(&s);
     va_start(ap, fmt);
     for (p = fmt; *p; p++) {
         int lcount, width = 0, zpad = 0;
@@ -130,4 +132,5 @@ void kprintf(const char *fmt, ...)
         }
     }
     va_end(ap);
+    uart_tx_end(s);
 }

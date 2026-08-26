@@ -17,6 +17,7 @@
 #include "ext2.h"
 #include "fat32.h"
 #include "lib.h"
+#include "panic.h"
 #include "platform.h"
 #include "ramfs.h"
 #include "task.h"

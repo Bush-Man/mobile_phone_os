@@ -168,7 +168,9 @@ int device_probe_one(struct device *dev)
         if (d->probe(dev) == 0) {
             dev->state = DEV_BOUND;
             nr_probes_ok++;
-            kprintf("drvcore: %s probed by %s\n", dev->name, d->name);
+            if (!dev->quiet_bind)
+                kprintf("drvcore: %s probed by %s\n",
+                        dev->name, d->name);
             return 0;
         }
         dev->drv = NULL;
@@ -198,6 +200,9 @@ void device_dump(void)
 
     for (unsigned b = 0; b < nbuses; b++)
         for (struct device *dev = buses[b]->devices; dev; dev = dev->next) {
+            if (dev->quiet_bind)
+                continue;               /* empty sockets: skip */
+
             kprintf("drvcore: %-22s %-8s %-12s res %d\n",
                     dev->name,
                     st[dev->state],

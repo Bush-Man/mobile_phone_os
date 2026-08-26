@@ -58,6 +58,8 @@ struct device {
     enum dev_state state;
     void *priv;                             /* driver-private data       */
     int fdt_node;                           /* DTB offset, or -1         */
+    bool quiet_bind;                        /* suppress success logging
+                                               (e.g. empty virtio slots) */
 
     struct device *next;                    /* per-bus device list       */
 };

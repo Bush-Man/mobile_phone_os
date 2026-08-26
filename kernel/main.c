@@ -28,6 +28,7 @@ void mem_selftest(void);
 void irq_time_selftest(void);
 void sched_selftest(void);
 void sched_demo_start(void);
+void phase6_init(const struct platform_info *plat);
 
 static void housekeeping_task(void *arg)
 {
@@ -171,6 +172,14 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
         kprintf("platform: PSCI %s conduit, CPU_ON 0x%x\n",
                 plat.psci_hvc ? "hvc" : "smc", plat.psci_cpu_on_fn);
     sched_selftest();
+
+    /*
+     * Phase 6: driver framework + core drivers. FDT enumeration and
+     * probe lifecycle, tty console takeover, virtio-blk/net, gpiolib,
+     * block + partition layer; the blocking selftest runs as the
+     * "drvtest" task once the schedulers start (see docs/PHASE_6.md).
+     */
+    phase6_init(&plat);
 
     kprintf("%s\n", BANNER);
 

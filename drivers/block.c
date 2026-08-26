@@ -119,6 +119,11 @@ struct block_device *block_first(void)
     return nbdevs ? bdevs[0] : NULL;
 }
 
+struct block_device *block_at(unsigned idx)
+{
+    return idx < nbdevs ? bdevs[idx] : NULL;
+}
+
 unsigned block_device_count(void)
 {
     return nbdevs;

@@ -292,8 +292,11 @@ static int vm_probe(struct device *dev)
     if (magic != VIRTIO_MAGIC)
         return -1;                      /* not a transport after all */
 
-    if (devid == VDEV_ID_NONE)
-        return 0;                       /* empty socket: nothing to do */
+    if (devid == VDEV_ID_NONE) {
+        /* empty socket: bind quietly so the log stays readable */
+        dev->quiet_bind = true;
+        return 0;
+    }
 
     if (version != 1) {
         kprintf("virtio: %s: version %u unsupported (legacy only)\n",

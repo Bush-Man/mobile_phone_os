@@ -143,4 +143,13 @@ paddr_t virtio_stage_pa(const void *stage_va);
 int virtio_blk_attach(struct virtio_dev *d);    /* drivers/virtio_blk.c */
 int virtio_net_attach(struct virtio_dev *d);    /* drivers/virtio_net.c */
 
+/* ---- virtio-net API (phase 6 report path; stack lands in phase 11) ------------------- */
+
+bool virtio_net_present(void);
+const uint8_t *virtio_net_mac(void);
+int  virtio_net_send(const void *frame, unsigned len);
+void virtio_net_set_rx_handler(void (*fn)(const void *frame, unsigned len,
+                                          void *arg), void *arg);
+void virtio_net_poll(void);
+
 #endif /* VIRTIO_H */

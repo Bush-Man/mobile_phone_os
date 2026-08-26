@@ -56,6 +56,7 @@ struct block_device {
 int  block_register(struct block_device *bd);
 struct block_device *block_find(const char *name);
 struct block_device *block_first(void);
+struct block_device *block_at(unsigned idx);    /* registry order */
 unsigned block_device_count(void);
 
 /* ---- buffered sector IO ------------------------------------------------------------ */

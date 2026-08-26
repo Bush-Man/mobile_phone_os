@@ -86,4 +86,18 @@ debug: all
 clean:
 	rm -rf $(BUILD)
 
+# ---- phase 6: virtio disk/net demo ---------------------------------------
+# Scratch disk for the block-layer selftest; created once, then
+# reused (the kernel writes its own MBR onto a blank image).
+
+disk.img:
+	dd if=/dev/zero of=$@ bs=1M count=64
+
+run-disk: all disk.img
+	$(QEMU) $(QEMU_ARGS) -nographic -kernel $(KERNEL) \
+	    -drive if=none,file=disk.img,format=raw,id=p6hd \
+	    -device virtio-blk-device,drive=p6hd \
+	    -netdev user,id=p6n0 \
+	    -device virtio-net-device,netdev=p6n0
+
 -include $(DEPS)

@@ -59,12 +59,8 @@ run: all
 	$(QEMU) $(QEMU_ARGS) -nographic -kernel $(KERNEL)
 
 test: all
-	@rm -f $(BUILD)/serial.log
-	@timeout 5 $(QEMU) $(QEMU_ARGS) -display none -monitor none \
-	    -serial file:$(BUILD)/serial.log -kernel $(KERNEL) || true
-	@grep -q "\[OK\] mobile_phone_os phase 2" $(BUILD)/serial.log && \
-	    echo "SMOKE TEST: PASS" || \
-	    { echo "SMOKE TEST: FAIL"; cat $(BUILD)/serial.log 2>/dev/null; exit 1; }
+	@python3 tests/serial_harness.py "$(QEMU)" "$(QEMU_ARGS)" \
+	    $(KERNEL) $(BUILD)/serial.log
 
 debug: all
 	$(QEMU) $(QEMU_ARGS) -nographic -kernel $(KERNEL) -S -gdb tcp::1234

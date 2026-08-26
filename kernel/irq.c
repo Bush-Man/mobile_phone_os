@@ -109,13 +109,16 @@ static void run_one(uint32_t iar)
 void irq_dispatch(void)
 {
     /*
-     * Drain until the controller reports nothing pending. A read of
-     * INTID 1023 is the spurious id: it must NOT be written to EOIR.
+     * Drain until the controller reports nothing pending. IDs
+     * 1020-1023 all mean "nothing to signal" (1023 canonical
+     * spurious, 1022 pending-but-filtered); none of them may be
+     * written back to EOIR.
      */
     for (;;) {
         uint32_t iar = gic_ack();
+        unsigned intid = iar & 0x3ffu;
 
-        if ((iar & 0x3ffu) == IRQ_SPURIOUS_ID) {
+        if (intid >= 1020u) {
             stats.spurious++;
             break;
         }

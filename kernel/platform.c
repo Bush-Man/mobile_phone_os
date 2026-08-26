@@ -122,10 +122,11 @@ static void probe_serial(struct platform_info *pi, const struct fdt *f)
         reg = fdt_getprop(f, node, "interrupts", &len);
         if (reg && len >= 12) {
             uint32_t type = fdt_u32(reg);
+            uint32_t num  = fdt_u32((const uint32_t *)reg + 1);
 
-            pi->uart_irq = (type == 0) ? fdt_u32(reg + 1) + IRQ_SPI_BASE
-                         : (type == 1) ? fdt_u32(reg + 1) + IRQ_PPI_BASE
-                                       : fdt_u32(reg + 1);
+            pi->uart_irq = (type == 0) ? num + IRQ_SPI_BASE
+                         : (type == 1) ? num + IRQ_PPI_BASE
+                                       : num;
         }
         return;
     }

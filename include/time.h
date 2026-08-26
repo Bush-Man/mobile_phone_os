@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+struct platform_info;
+
 /*
  * Periodic tick rate driving jiffies. The hardware programming is
  * one-shot compare re-armed from the handler (no auto-reload mode on
@@ -28,7 +30,5 @@ uint64_t time_wallclock_ns(void);
  * (replaces the periodic re-arm until time_restart_periodic())      */
 void     timer_arm_oneshot_ns(uint64_t ns);
 void     time_restart_periodic(void);
-
-struct platform_info;
 
 #endif /* TIME_H */

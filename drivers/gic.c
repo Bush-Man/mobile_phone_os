@@ -157,23 +157,24 @@ static void dist_init(void)
         mmio_write32(gicd + GICD_ICFGR + 4u * i, 0);
 
     /*
-     * Mark everything Group 1. Without security extensions (QEMU
-     * virt with a direct -kernel boot) these registers are WI and
-     * the single visible group is enabled by the GRP0 bits below.
+     * Keep everything Group 0. Without security extensions (QEMU
+     * virt with a direct -kernel boot) a Group 1 interrupt is never
+     * signalled to EL1 -- the interface just reports 1022 "pending
+     * but not visible", so marking lines Group 1 here would silence
+     * the entire controller. Group 1 routing gets revisited only if
+     * we ever run behind secure firmware that needs it.
      */
     for (i = 0; i < words; i++)
-        mmio_write32(gicd + GICD_IGROUPR + 4u * i, 0xffffffffu);
+        mmio_write32(gicd + GICD_IGROUPR + 4u * i, 0);
 
-    mmio_write32(gicd + GICD_CTLR,
-                 GICD_CTLR_ENABLE_GRP0 | GICD_CTLR_ENABLE_GRP1);
+    mmio_write32(gicd + GICD_CTLR, GICD_CTLR_ENABLE_GRP0);
 }
 
 static void cpu_init(void)
 {
     /* pass every priority through the running threshold */
     mmio_write32(gicc + GICC_PMR, 0xffu);
-    mmio_write32(gicc + GICC_CTLR,
-                 GICC_CTLR_ENABLE_GRP0 | GICC_CTLR_ENABLE_GRP1);
+    mmio_write32(gicc + GICC_CTLR, GICC_CTLR_ENABLE_GRP0);
 }
 
 void gic_init(const struct platform_info *plat)

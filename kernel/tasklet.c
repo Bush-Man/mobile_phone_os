@@ -77,13 +77,19 @@ static bool pop(struct work_item *out)
 void tasklet_drain(void)
 {
     struct work_item w;
+    daif_state s = irq_local_save();
 
+    /*
+     * Leave the caller's masking state exactly as found: work runs
+     * preemptible only if the caller itself allowed interrupts.
+     */
     while (pop(&w)) {
         stats.ran++;
-        irq_local_unmask();             /* work runs preemptible   */
+        irq_local_restore(s);
         w.fn(w.arg);
-        irq_local_mask();               /* re-mask for next pop    */
+        s = irq_local_save();
     }
+    irq_local_restore(s);
 }
 
 void tasklet_stats_get(struct tasklet_stats *out)

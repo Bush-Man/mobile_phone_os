@@ -45,6 +45,7 @@
 #include "syscall.h"
 #include "task.h"
 #include "uaccess.h"
+#include "vfs.h"
 
 /* built-in images embedded by arch/aarch64/builtin_imgs.S */
 extern const uint8_t builtin_hello_start[];
@@ -518,6 +519,9 @@ static bool reap_one(struct proc *zombie, int *code_out, int *pid_out)
     registry_del(zombie);
     space_destroy(zombie);
 
+    /* phase 7: close the process's files before anything else      */
+    vfs_proc_fds_release(zombie);
+
     if (zombie->kstack) {
         kfree(zombie->kstack);
         zombie->kstack = NULL;
@@ -689,8 +693,18 @@ int proc_spawn(const char *img_name,
     p->entry_tf = tf;
     p_strcpy(p->name, img_name, PROC_NAME_MAX);
 
+    /* phase 7: fresh fd table with stdio attached to the console   */
+    r = vfs_proc_fds_init(p);
+    if (r) {
+        space_destroy(p);
+        kfree(p->kstack);
+        kfree(p);
+        return (int)r;
+    }
+
     slot = task_create(img_name, proc_task_body, p, PROC_PRIO);
     if (slot < 0) {
+        vfs_proc_fds_release(p);
         space_destroy(p);
         kfree(p->kstack);
         kfree(p);
@@ -748,6 +762,9 @@ int proc_do_fork(struct trap_frame *tf)
     child->sig_pending = 0;             /* pending is NOT inherited   */
     child->in_signal = false;
     child->brk = parent->brk;
+
+    /* phase 7: fork shares open file descriptions (dup refs)       */
+    vfs_proc_fds_inherit(child, parent);
 
     /* the child's first user moment: same PC/SP/regs, but retval 0 */
     memcpy(&child->entry_tf, tf, sizeof(*tf));

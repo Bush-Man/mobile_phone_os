@@ -9,6 +9,11 @@
  * fork and sigreturn need the raw trap frame (they manufacture or
  * consume whole register states), so they are special-cased before
  * the generic table lookup.
+ *
+ * Phase 7: read/write moved onto the per-process fd table; fds 0-2
+ * are stdio opened on /dev/console when devfs is up. Before that
+ * (fds == NULL, e.g. images booted without devfs) the legacy raw
+ * UART paths below keep phase-5 semantics byte-for-byte.
  */
 
 #include <stdint.h>
@@ -27,6 +32,7 @@
 #include "time.h"
 #include "uaccess.h"
 #include "uart.h"
+#include "vfs.h"
 
 typedef long (*sys_fn_t)(uint64_t, uint64_t, uint64_t,
                          uint64_t, uint64_t, uint64_t);
@@ -35,14 +41,11 @@ typedef long (*sys_fn_t)(uint64_t, uint64_t, uint64_t,
 
 #define IO_CHUNK 256
 
-static long sys_write(uint64_t fd, uint64_t ubuf, uint64_t len)
+/* legacy fd-less fallbacks (phase 5 behavior)                     */
+static long console_write_raw(uint64_t ubuf, size_t left)
 {
     char kbuf[IO_CHUNK];
-    size_t left = (size_t)len;
     uint64_t off = 0;
-
-    if (fd != 1 && fd != 2)
-        return -EBADF;
 
     while (left) {
         size_t chunk = left < sizeof(kbuf) ? left : sizeof(kbuf);
@@ -55,32 +58,235 @@ static long sys_write(uint64_t fd, uint64_t ubuf, uint64_t len)
         off += chunk;
         left -= chunk;
     }
-    return (long)len;
+    return 0;
+}
+
+static long sys_write(uint64_t fd, uint64_t ubuf, uint64_t len)
+{
+    struct proc *p = proc_current();
+    struct file *f;
+
+    if (!p || !p->fds || fd > 2)
+        goto legacy;
+    if (!(f = vfs_fd_get(p->fds, (int)fd)))
+        return -EBADF;
+
+    {
+        char kbuf[IO_CHUNK];
+        size_t left = (size_t)len;
+        uint64_t off = 0;
+        long total = 0;
+
+        while (left) {
+            size_t chunk = left < sizeof(kbuf) ? left : sizeof(kbuf);
+            long r;
+
+            if (uacc_copy_in_cur(kbuf,
+                                 (const void *)(uintptr_t)(ubuf + off),
+                                 chunk)) {
+                file_close(f);
+                return total ? total : -EFAULT;
+            }
+            r = f_write(f, kbuf, chunk);
+            if (r <= 0) {
+                if (!total)
+                    total = r ? r : -EIO;
+                break;
+            }
+            total += r;
+            off += r;
+            left -= (size_t)r;
+            if ((size_t)r < chunk)
+                break;                  /* short write                */
+        }
+        file_close(f);
+        return total;
+    }
+
+legacy:
+    if (fd != 1 && fd != 2)
+        return -EBADF;
+    {
+        long r = console_write_raw(ubuf, (size_t)len);
+
+        return r ? r : (long)len;
+    }
 }
 
 static long sys_read(uint64_t fd, uint64_t ubuf, uint64_t len)
 {
+    struct proc *p = proc_current();
+    struct file *f;
     char kbuf[IO_CHUNK];
-    unsigned n;
+    long r;
 
-    if (fd != 0)
+    if (!p || !p->fds)
+        goto legacy;
+    if (!(f = vfs_fd_get(p->fds, (int)fd)))
         return -EBADF;
     if (len > sizeof(kbuf))
         len = sizeof(kbuf);
 
-    /* drain whatever the interrupt-fed RX ring holds (non-blocking) */
+    /* tty-backed fds block here for a canonical line               */
+    r = f_read(f, kbuf, (size_t)len);
+    file_close(f);
+    if (r <= 0)
+        return r ? r : -EAGAIN;
+    if (uacc_copy_out_cur((void *)(uintptr_t)ubuf, kbuf, (size_t)r))
+        return -EFAULT;
+    return r;
+
+legacy:
+    if (fd != 0)
+        return -EBADF;
+    if (len > sizeof(kbuf))
+        len = sizeof(kbuf);
     {
+        unsigned n;
         daif_state s = irq_local_save();
 
         n = uart_rx_read(kbuf, (unsigned)len);
         irq_local_restore(s);
+
+        if (!n)
+            return -EAGAIN;             /* would block                */
+        if (uacc_copy_out_cur((void *)(uintptr_t)ubuf, kbuf, n))
+            return -EFAULT;
+        return (long)n;
+    }
+}
+
+/* ---- filesystem ------------------------------------------------------------- */
+
+/* copy a NUL-terminated path in from userland                      */
+static int path_copy_in(uint64_t upath, char *kpath /* VFS_PATH_MAX */)
+{
+    long nl = uacc_strnlen_user_cur((const void *)(uintptr_t)upath,
+                                    VFS_PATH_MAX - 1);
+
+    if (nl <= 0)
+        return nl < 0 ? -EFAULT : -ENOENT;
+    if (uacc_copy_in_cur(kpath, (const void *)(uintptr_t)upath,
+                         (size_t)nl))
+        return -EFAULT;
+    kpath[nl] = '\0';
+    return 0;
+}
+
+static long sys_open(uint64_t uname, uint64_t flags, uint64_t mode)
+{
+    struct proc *p = proc_current();
+    char kpath[VFS_PATH_MAX];
+    struct file *f;
+    int fd, r;
+
+    (void)mode;                         /* no permission bits yet     */
+
+    if (!p)
+        panic("open outside a process");
+    r = path_copy_in(uname, kpath);
+    if (r)
+        return r;
+
+    r = vfs_open(kpath, (unsigned)flags, &f);
+    if (r)
+        return r;
+
+    if (!p->fds) {
+        r = vfs_proc_fds_init(p);       /* late table: no stdio yet   */
+        if (r) {
+            file_close(f);
+            return r;
+        }
     }
 
-    if (!n)
-        return -EAGAIN;                 /* would block; no blocking io yet */
-    if (uacc_copy_out_cur((void *)(uintptr_t)ubuf, kbuf, n))
+    fd = vfs_fd_install(p->fds, f);     /* consumes our reference     */
+    if (fd < 0)
+        file_close(f);
+    return fd;
+}
+
+static long sys_close(uint64_t fd)
+{
+    struct proc *p = proc_current();
+
+    if (!p || !p->fds)
+        return -EBADF;
+    if (fd >= PROC_FD_MAX)
+        return -EBADF;
+
+    /*
+     * Stdio stays open for the process lifetime here (no exec-time
+     * close-on-exec machinery yet), but an explicit close works.
+     */
+    {
+        struct file *f = vfs_fd_get(p->fds, (int)fd);
+
+        if (!f)
+            return -EBADF;
+        file_close(f);                  /* drop the get() reference   */
+        vfs_fd_put(p->fds, (int)fd);    /* drop the slot's reference  */
+    }
+    return 0;
+}
+
+static long sys_lseek(uint64_t fd, uint64_t off, uint64_t whence)
+{
+    struct proc *p = proc_current();
+    struct file *f;
+    int64_t pos;
+    int r;
+
+    if (!p || !p->fds || !(f = vfs_fd_get(p->fds, (int)fd)))
+        return -EBADF;
+    r = f_lseek(f, (int64_t)off, (int)whence, &pos);
+    file_close(f);
+    return r ? r : (long)pos;
+}
+
+static long sys_getdents(uint64_t fd, uint64_t ubuf, uint64_t buflen)
+{
+    struct proc *p = proc_current();
+    struct file *f;
+    uint8_t kbuf[512];
+    long r;
+
+    if (!p || !p->fds || !(f = vfs_fd_get(p->fds, (int)fd)))
+        return -EBADF;
+    if (buflen > sizeof(kbuf))
+        buflen = sizeof(kbuf);
+
+    r = f_getdents(f, kbuf, (size_t)buflen);
+    file_close(f);
+    if (r <= 0)
+        return r ? r : 0;               /* 0 = end of directory       */
+    if (uacc_copy_out_cur((void *)(uintptr_t)ubuf, kbuf, (size_t)r))
         return -EFAULT;
-    return (long)n;
+    return r;
+}
+
+static long sys_mkdir(uint64_t uname)
+{
+    char kpath[VFS_PATH_MAX];
+    int r = path_copy_in(uname, kpath);
+
+    return r ? r : vfs_mkdir(kpath);
+}
+
+static long sys_rmdir(uint64_t uname)
+{
+    char kpath[VFS_PATH_MAX];
+    int r = path_copy_in(uname, kpath);
+
+    return r ? r : vfs_rmdir(kpath);
+}
+
+static long sys_unlink(uint64_t uname)
+{
+    char kpath[VFS_PATH_MAX];
+    int r = path_copy_in(uname, kpath);
+
+    return r ? r : vfs_unlink(kpath);
 }
 
 /* ---- process ------------------------------------------------------------ */
@@ -235,6 +441,13 @@ static const sys_fn_t sys_table[] = {
     [SYS_sleep]      = (sys_fn_t)sys_sleep,
     [SYS_sigaction]  = (sys_fn_t)sys_sigaction,
     [SYS_uptime_ms]  = (sys_fn_t)sys_uptime_ms,
+    [SYS_open]       = (sys_fn_t)sys_open,
+    [SYS_close]      = (sys_fn_t)sys_close,
+    [SYS_lseek]      = (sys_fn_t)sys_lseek,
+    [SYS_getdents]   = (sys_fn_t)sys_getdents,
+    [SYS_mkdir]      = (sys_fn_t)sys_mkdir,
+    [SYS_rmdir]      = (sys_fn_t)sys_rmdir,
+    [SYS_unlink]     = (sys_fn_t)sys_unlink,
 };
 
 void syscall_dispatch(struct trap_frame *tf)

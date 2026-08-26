@@ -23,6 +23,14 @@ struct trap_frame;
 #define SYS_sleep     10
 #define SYS_sigaction 11
 #define SYS_uptime_ms 12
+/* phase 7: filesystem access */
+#define SYS_open      13
+#define SYS_close     14
+#define SYS_lseek     15
+#define SYS_getdents  16
+#define SYS_mkdir     17
+#define SYS_rmdir     18
+#define SYS_unlink    19
 
 /* minimal errno subset (values match Linux/aarch64) */
 #define EPERM   1

@@ -11,17 +11,31 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "cpu.h"
 #include "irq.h"
 #include "lib.h"
 #include "panic.h"
+#include "spinlock.h"
 #include "task.h"
+#include "time.h"
 
 struct task tasks[MAX_TASKS];
 
 static uint8_t task_stacks[MAX_TASKS][TASK_STACK_SIZE]
     __attribute__((aligned(16)));
 
-static uint64_t rq_seq;             /* FIFO ticket source            */
+/*
+ * One lock guards every state transition in the system (task table,
+ * run-queue keys, wait queues, deadlines); rq_seq hands out FIFO
+ * tickets for round-robin fairness among equal priorities.
+ */
+spinlock_t task_state_lock = SPINLOCK_INIT;
+static uint64_t rq_seq;
+
+uint64_t task_next_key(void)
+{
+    return ++rq_seq;
+}
 
 /* defined in sched.c */
 void schedule(void);
@@ -68,15 +82,20 @@ static void task_prime(struct task *t, const char *name,
 int task_create(const char *name, void (*fn)(void *), void *arg,
                 unsigned prio)
 {
-    daif_state s = irq_local_save();
-    struct task *t = alloc_task();
+    daif_state s;
+    struct task *t;
 
-    if (!t || !fn) {
-        irq_local_restore(s);
+    if (!fn)
+        return -1;
+
+    spin_lock_irqsave(&task_state_lock, &s);
+    t = alloc_task();
+    if (!t) {
+        spin_unlock_irqrestore(&task_state_lock, s);
         return -1;
     }
     task_prime(t, name, fn, arg, prio);
-    irq_local_restore(s);
+    spin_unlock_irqrestore(&task_state_lock, s);
     return (int)(t - tasks);
 }
 
@@ -99,7 +118,7 @@ void task_exit(void)
     if (cpu_id() >= NR_CPUS)
         panic("task_exit on unknown cpu");
 
-    s = irq_local_save();
+    spin_lock_irqsave(&task_state_lock, &s);
     {
         struct task *t = this_cpu()->current;
 
@@ -107,19 +126,134 @@ void task_exit(void)
             panic("task_exit without current");
         t->state = TASK_DEAD;
     }
-    irq_local_restore(s);
+    spin_unlock_irqrestore(&task_state_lock, s);
     schedule();                     /* never returns */
     panic("task_exit resumed a dead task");
 }
 
 void task_yield(void)
 {
-    daif_state s = irq_local_save();
+    daif_state s;
 
+    spin_lock_irqsave(&task_state_lock, &s);
     if (this_cpu()->current) {
         this_cpu()->current->state = TASK_READY;
-        this_cpu()->current->rq_key = ++rq_seq;
+        this_cpu()->current->rq_key = task_next_key();
     }
-    irq_local_restore(s);
+    spin_unlock_irqrestore(&task_state_lock, s);
     schedule();
+}
+
+/* ---- blocking primitives ------------------------------------------------ */
+
+static void block_current(enum task_state state)
+{
+    struct per_cpu *pc = this_cpu();
+    daif_state s;
+
+    /* a task switched in via sched_post_irq legitimately runs inside
+     * an irq window (and may migrate between cpus), so the only
+     * meaningful precondition for blocking is that current exists */
+    if (!pc->current)
+        panic("blocking call in irq or pre-scheduler context");
+
+    spin_lock_irqsave(&task_state_lock, &s);
+    pc->current->state = state;
+    spin_unlock_irqrestore(&task_state_lock, s);
+    schedule();
+}
+
+void msleep(uint64_t msecs)
+{
+    daif_state s;
+
+    if (msecs == 0) {
+        task_yield();
+        return;
+    }
+
+    spin_lock_irqsave(&task_state_lock, &s);
+    this_cpu()->current->wake_at = jiffies_read() + msecs * TIME_HZ / 1000u;
+    spin_unlock_irqrestore(&task_state_lock, s);
+
+    block_current(TASK_SLEEPING);
+}
+
+void wait_sleep_when(task_cond_t cond, void *cond_ctx,
+                     struct waitqueue *wq)
+{
+    struct per_cpu *pc = this_cpu();
+    daif_state s;
+
+    /* a task switched in via sched_post_irq legitimately runs inside
+     * an irq window (and may migrate between cpus), so the only
+     * meaningful precondition for blocking is that current exists */
+    if (!pc->current)
+        panic("blocking call in irq or pre-scheduler context");
+
+    /*
+     * Evaluate the predicate and enqueue atomically with respect to
+     * any waker: both sides touch the condition under the scheduler
+     * lock, so a wake between "check" and "sleep" is impossible.
+     */
+    spin_lock_irqsave(&task_state_lock, &s);
+    if (!cond(cond_ctx)) {
+        spin_unlock_irqrestore(&task_state_lock, s);
+        return;                         /* already satisfied */
+    }
+    {
+        struct task *t = pc->current;
+
+        t->wq_next = wq->head;
+        wq->head = t;
+        t->state = TASK_BLOCKED;
+    }
+    spin_unlock_irqrestore(&task_state_lock, s);
+    schedule();
+}
+
+void wait_sleep(struct waitqueue *wq)
+{
+    struct per_cpu *pc = this_cpu();
+    daif_state s;
+
+    /* a task switched in via sched_post_irq legitimately runs inside
+     * an irq window (and may migrate between cpus), so the only
+     * meaningful precondition for blocking is that current exists */
+    if (!pc->current)
+        panic("blocking call in irq or pre-scheduler context");
+
+    spin_lock_irqsave(&task_state_lock, &s);
+    {
+        struct task *t = pc->current;
+
+        t->wq_next = wq->head;
+        wq->head = t;
+        t->state = TASK_BLOCKED;
+    }
+    spin_unlock_irqrestore(&task_state_lock, s);
+    schedule();
+}
+
+void wait_wake_all(struct waitqueue *wq)
+{
+    struct task *cur = current_task();
+    bool preempt = false;
+    daif_state s;
+
+    spin_lock_irqsave(&task_state_lock, &s);
+    while (wq->head) {
+        struct task *t = wq->head;
+
+        wq->head = t->wq_next;
+        t->wq_next = NULL;
+        t->state = TASK_READY;
+        t->rq_key = task_next_key();
+        if (cur && t->prio < cur->prio)
+            preempt = true;         /* waiter outranks this cpu */
+    }
+    spin_unlock_irqrestore(&task_state_lock, s);
+
+    if (preempt)
+        this_cpu()->need_resched = true;
 }

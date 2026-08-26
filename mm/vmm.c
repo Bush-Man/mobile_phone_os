@@ -21,6 +21,7 @@
 #include <stdbool.h>
 
 #include "lib.h"
+#include "cpu.h"
 #include "mm/pmm.h"
 #include "mm/types.h"
 #include "mm/vmm.h"
@@ -336,6 +337,22 @@ static void build_upper_windows(paddr_t ram_base, uint64_t ram_size)
 
     ((uint64_t *)l1_dev)[L1_IDX(KERN_DEVICE_BASE)] =
         block_desc(0, VM_READ | VM_WRITE | VM_DEVICE);   /* PA 0..1G */
+
+    /*
+     * Alias RAM into the device window too: uncached Device-nGnRE
+     * stores land straight in DRAM, which SMP bring-up exploits to
+     * hand page tables to a cache-cold core without cache
+     * maintenance. CAUTION: writes here do NOT update cached lines
+     * already resident in any cpu's d-cache -- after both cpus run
+     * cached+coherent, this window must not be used on live data.
+     */
+    wva  = KERN_DEVICE_BASE + ram_base;
+    wend = ALIGN_UP(KERN_DEVICE_BASE + ram_base + ram_size, GB);
+
+    for (; wva < wend; wva += GB)
+        ((uint64_t *)l1_dev)[L1_IDX(wva)] =
+            block_desc(wva - KERN_DEVICE_BASE,
+                       VM_READ | VM_WRITE | VM_DEVICE);
 }
 
 void vmm_init(const struct platform_info *plat)
@@ -430,22 +447,37 @@ void vmm_cpu_activate(void)
 }
 
 /*
- * Clean the whole kernel image out of the boot CPU's d-cache so a
- * cache-cold secondary (MMU off = reads DRAM) sees the page tables,
- * .data and .bss state built so far. Mailboxes written after this
- * must be cleaned individually by their writer.
+ * Make everything a cache-cold secondary needs visible in DRAM
+ * without any cache-maintenance instructions (which QEMU's MTTCG
+ * handles unreliably): re-write the boot cpu's dirty page-table
+ * pages and the SMP mailboxes out through the uncached device
+ * window. Identity mapping means PA == VA for all of these.
+ *
+ * After a secondary enables its own MMU/caches both cores are
+ * inner-shareable coherent and no further maintenance is needed.
  */
 void vmm_sync_kernel_to_ram(void)
 {
-    extern uint8_t _start[], _end[];
-    uintptr_t addr = (uintptr_t)_start & ~63UL;
-    uint64_t ctr, dminline;
-    const uintptr_t end = (uintptr_t)_end;
+    static void *pages_to_push[] = {
+        lower_l0, lower_l1, upper_l0,
+        h_l1, h_l2, h_l3[0], h_l3[1],
+    };
 
-    __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
-    dminline = 4UL << ((ctr >> 16) & 0xf);      /* bytes per line */
+    for (unsigned i = 0; i < ARRAY_SIZE(pages_to_push); i++) {
+        const volatile uint64_t *src = pages_to_push[i];
+        uint64_t *dst = (uint64_t *)vmm_devmap((paddr_t)(uintptr_t)src);
 
-    for (; addr < end; addr += dminline)
-        __asm__ volatile("dc cvac, %0" :: "r"(addr));
+        for (unsigned w = 0; w < PT_ENTRIES; w++)
+            dst[w] = src[w];
+    }
+
+    /* SMP stack mailboxes live in kernel/smp.c */
+    extern uint64_t sec_stacks[NR_CPUS];
+    volatile uint64_t *ssrc = sec_stacks;
+    uint64_t *sdst = (uint64_t *)vmm_devmap((paddr_t)(uintptr_t)sec_stacks);
+
+    for (unsigned w = 0; w < NR_CPUS; w++)
+        sdst[w] = ssrc[w];
+
     __asm__ volatile("dsb sy");
 }

@@ -12,6 +12,7 @@
 #include "mm/types.h"
 #include "panic.h"
 #include "task.h"
+#include "uart.h"
 
 extern uint8_t vectors_begin[];
 
@@ -46,6 +47,9 @@ void exceptions_handler(struct trap_frame *tf, unsigned kind)
     uint64_t esr = tf->esr;
     uint64_t ec = (esr >> 26) & 0x3f;
     uint64_t far;
+
+    /* faults must be able to report even with locks wedged */
+    uart_panic_mode();
 
     __asm__ volatile("mrs %0, far_el1" : "=r"(far));
 

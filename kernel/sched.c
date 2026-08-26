@@ -18,6 +18,7 @@
 
 #include "irq.h"
 #include "lib.h"
+#include "mmio.h"
 #include "panic.h"
 #include "spinlock.h"
 #include "task.h"
@@ -25,10 +26,11 @@
 
 struct per_cpu cpus[NR_CPUS];
 
-static spinlock_t sched_lock = SPINLOCK_INIT;
-static uint64_t rq_seq;
-
 #define SCHED_QUANTUM 5         /* ticks (50 ms) before round-robin */
+
+/* shared state plumbing from kernel/task.c */
+extern spinlock_t task_state_lock;
+uint64_t task_next_key(void);
 
 static inline bool better(const struct task *a, const struct task *b)
 {
@@ -59,7 +61,14 @@ void schedule(void)
     daif_state s;
     struct task *prev, *next;
 
-    spin_lock_irqsave(&sched_lock, &s);
+    /*
+     * The lock spans the WHOLE switch: prev stays unpickable until
+     * its callee-saved context is fully written, and the incoming
+     * task resumes exactly here (inside its own old schedule()
+     * frame) to release the same lock. Unlocking before the save
+     * would let another cpu pick up a half-saved context.
+     */
+    spin_lock_irqsave(&task_state_lock, &s);
 
     prev = pc->current;
     if (!prev)
@@ -68,32 +77,38 @@ void schedule(void)
 
     if (!next) {
         /* nothing runnable: stay where we are (idle keeps polling) */
-        spin_unlock_irqrestore(&sched_lock, s);
+        spin_unlock_irqrestore(&task_state_lock, s);
         return;
     }
 
-    if (prev && prev->state == TASK_RUNNING)
-        prev->state = TASK_READY;   /* still runnable, just yielding */
+    if (next != prev) {
+        if (prev->state == TASK_RUNNING)
+            prev->state = TASK_READY;
 
-    next->state = TASK_RUNNING;
+        next->state = TASK_RUNNING;
+        pc->current = next;
+        pc->switches++;
+    }
     next->quantum_left = SCHED_QUANTUM;
-    pc->current = next;
     pc->need_resched = false;
-    pc->switches++;
-
-    spin_unlock_irqrestore(&sched_lock, s);
 
     cpu_switch_to(prev, next);
+
+    /* resumed as `next` (or fell through switching to ourselves) */
+    spin_unlock_irqrestore(&task_state_lock, s);
 }
 
 /* ---- timer-tick side ------------------------------------------------------- */
 
+static bool temp_preempt_off = true;
+
 void sched_tick(void)
 {
+    if (temp_preempt_off) return;
     struct per_cpu *pc = this_cpu();
     daif_state s;
 
-    spin_lock_irqsave(&sched_lock, &s);
+    spin_lock_irqsave(&task_state_lock, &s);
 
     /* wake expired sleepers */
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -102,7 +117,7 @@ void sched_tick(void)
         if (t->state == TASK_SLEEPING &&
             (long)(jiffies_read() - t->wake_at) >= 0) {
             t->state = TASK_READY;
-            t->rq_key = ++rq_seq;
+            t->rq_key = task_next_key();
         }
     }
 
@@ -114,11 +129,12 @@ void sched_tick(void)
             pc->need_resched = true;
     }
 
-    spin_unlock_irqrestore(&sched_lock, s);
+    spin_unlock_irqrestore(&task_state_lock, s);
 }
 
 void sched_post_irq(void)
 {
+    if (temp_preempt_off) return;
     struct per_cpu *pc = this_cpu();
 
     if (pc->need_resched && pc->current) {
@@ -143,7 +159,7 @@ void sched_init(void)
         memset(t, 0, sizeof(*t));
         t->state  = TASK_READY;
         t->prio   = TASK_IDLE_PRIO;
-        t->rq_key = ++rq_seq;
+        t->rq_key = task_next_key();
         t->name   = (c == 0) ? "idle0" : "idle1";
     }
 
@@ -161,8 +177,43 @@ void sched_init(void)
  */
 void idle_loop(void)
 {
+    uint64_t last_counter = time_counter_value();
+    unsigned long last_jiffies = jiffies_read();
+    bool dumped = false;
+
     for (;;) {
         schedule();
+
+        /* TEMP: detect "timer died" state and dump controller regs */
+        {
+            uint64_t now = time_counter_value();
+            unsigned long j = jiffies_read();
+
+            if (!dumped && now - last_counter > time_counter_hz() / 5 &&
+                j == last_jiffies) {
+                dumped = true;
+                {
+                    uint64_t ctl;
+                    __asm__ volatile("mrs %0, cntv_ctl_el0"
+                                     : "=r"(ctl));
+                    kprintf("[idle%llu stall: j=%lu ctl=%llx ist=%d "
+                            "isen0=%08x ispend0=%08x rpr=%08x "
+                            "hppir=%08x]\n",
+                            (unsigned long long)cpu_id(), j,
+                            (unsigned long long)ctl,
+                            (int)((ctl >> 2) & 1),
+                            mmio_read32(0x08000000u + 0x100u),
+                            mmio_read32(0x08000000u + 0x200u),
+                            mmio_read32(0x08010000u + 0x014u),
+                            mmio_read32(0x08010000u + 0x018u));
+                }
+            }
+            if (now - last_counter > time_counter_hz() / 5) {
+                last_counter = now;
+                last_jiffies = j;
+            }
+        }
+
         __asm__ volatile("wfi");
     }
 }

@@ -1,5 +1,5 @@
 /*
- * main.c - phase 3 bring-up sequence.
+ * main.c - phase 4 bring-up sequence.
  */
 
 #include <stdint.h>
@@ -15,6 +15,8 @@
 #include "mm/vmm.h"
 #include "panic.h"
 #include "platform.h"
+#include "smp.h"
+#include "task.h"
 #include "tasklet.h"
 #include "time.h"
 #include "uart.h"
@@ -24,8 +26,12 @@ extern uint8_t _start[];
 
 void mem_selftest(void);
 void irq_time_selftest(void);
+void sched_selftest(void);
+void sched_demo_start(void);
 
-#define BANNER "[OK] mobile_phone_os phase 3"
+extern const struct platform_info *smp_plat;
+
+#define BANNER "[OK] mobile_phone_os phase 4"
 
 void kmain(uint64_t boot_el, uint64_t dtb_ptr)
 {
@@ -102,14 +108,33 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
             (unsigned long long)is.handled,
             (unsigned long long)ts.ran);
 
+    /*
+     * Phase 4: scheduler + secondaries. The boot cpu adopts idle0,
+     * releases cpu1 (which activates its own MMU/GIC/timer and
+     * adopts idle1), then verifies cross-cpu ping-pong before the
+     * milestone demo threads take the stage.
+     */
+    sched_init();
+    smp_plat = &plat;
+    smp_init();
+    kprintf("smp: %u cpu%s released via PSCI\n", NR_CPUS,
+            NR_CPUS == 1 ? "" : "s");
+    if (plat.has_psci)
+        kprintf("platform: PSCI %s conduit, CPU_ON 0x%x\n",
+                plat.psci_hvc ? "hvc" : "smc", plat.psci_cpu_on_fn);
+    sched_selftest();
+
     kprintf("%s\n", BANNER);
 
+    sched_demo_start();                     /* ping vs pong forever-ish */
+
+    /* kmain lives on as cpu0's idle task from here */
     for (;;) {
         uint64_t ms;
 
-        tasklet_drain();                    /* bottom halves here     */
+        tasklet_drain();                    /* bottom halves here       */
 
-        /* milestone demo: one uptime line per second of wall time */
+        /* one uptime line per second; preemption handles the rest */
         if ((long)(jiffies_read() - mark) >= TIME_HZ) {
             mark += TIME_HZ;
             ms = time_uptime_ms();

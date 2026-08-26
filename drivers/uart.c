@@ -59,18 +59,30 @@ void uart_init(void)
  * TX serialization: multi-line output (kprintf, echo tasklet) holds
  * one spinlock for the whole call so concurrent cpus cannot interleave
  * characters. Callers carry the DAIF state between begin/end.
+ *
+ * Fault paths set raw mode (uart_panic_mode) to report without any
+ * locking: a crash while holding tx_lock must still be able to print
+ * its own diagnosis instead of deadlocking silently.
  */
 static spinlock_t tx_lock = SPINLOCK_INIT;
+static volatile bool raw_output;
+
+void uart_panic_mode(void)
+{
+    raw_output = true;
+}
 
 void uart_tx_begin(daif_state *s)
 {
     *s = irq_local_save();
-    spin_lock(&tx_lock);
+    if (!raw_output)
+        spin_lock(&tx_lock);
 }
 
 void uart_tx_end(daif_state s)
 {
-    spin_unlock(&tx_lock);
+    if (!raw_output)
+        spin_unlock(&tx_lock);
     irq_local_restore(s);
 }
 

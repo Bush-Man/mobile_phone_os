@@ -60,6 +60,11 @@ uint32_t time_counter_hz(void)
     return counter_hz;
 }
 
+uint64_t time_counter_value(void)
+{
+    return counter_read();
+}
+
 unsigned long jiffies_read(void)
 {
     return jiffies;

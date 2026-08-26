@@ -13,6 +13,7 @@ char uart_getc(void);
 /* whole-output serialization (SMP-safe lines); caller carries state */
 void uart_tx_begin(daif_state *s);
 void uart_tx_end(daif_state s);
+void uart_panic_mode(void);     /* print without locks from fault paths */
 
 /*
  * RX-interrupt mode: register the console line with the IRQ framework,

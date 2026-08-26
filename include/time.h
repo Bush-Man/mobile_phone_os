@@ -17,6 +17,7 @@ void     time_init(const struct platform_info *plat);
 void     time_cpu_init(void);   /* per-cpu (banked) timer bring-up */
 
 uint32_t time_counter_hz(void);         /* raw system counter frequency */
+uint64_t time_counter_value(void);      /* raw virtual counter ticks    */
 unsigned long jiffies_read(void);       /* ticks since boot, wraps      */
 
 /* monotonic since boot */

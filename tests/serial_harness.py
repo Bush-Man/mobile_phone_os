@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-serial_harness.py - phase 3 smoke test driver.
+serial_harness.py - smoke test driver (phase number via argv).
 
 Spawns the kernel in QEMU with the console UART backed by a UNIX
 socket chardev, then acts as the far end of the serial line:
@@ -22,7 +22,6 @@ import threading
 import time
 
 SOCKET = "build/ser.sock"
-MARKER = b"phase3rx\r"
 DEADLINE = 12.0          # seconds overall
 
 
@@ -31,6 +30,10 @@ def main():
     machine_args = sys.argv[2].split()
     kernel = sys.argv[3]
     logfile = sys.argv[4]
+    phase = sys.argv[5] if len(sys.argv) > 5 else "3"
+    marker = f"phase{phase}rx\r".encode()
+    echo_tag = f"phase{phase}rx".encode()
+    banner = f"[OK] mobile_phone_os phase {phase}".encode()
 
     for f in (SOCKET, logfile):
         try:
@@ -71,9 +74,10 @@ def main():
     passed = False
 
     def check(b):
-        return (b"[OK] mobile_phone_os phase 3" in b and
-                b"s uptime" in b and
-                b"phase3rx" in b)
+        ok = (banner in b and b"s uptime" in b and echo_tag in b)
+        if phase >= "4":
+            ok = ok and (b"ping: round" in b and b"pong: round" in b)
+        return ok
 
     try:
         while time.time() - t0 < DEADLINE:
@@ -91,8 +95,8 @@ def main():
             # and keep retrying until the echo proves it landed
             if (send_input and
                     (not got_input_sent or time.time() - last_send > 2.0)
-                    and b"echo armed" in buf and b"phase3rx" not in buf):
-                sock.sendall(MARKER)
+                    and b"echo armed" in buf and echo_tag not in buf):
+                sock.sendall(marker)
                 if not got_input_sent:
                     print(f"harness: RX input sent at "
                           f"t={time.time()-t0:.2f}s", file=sys.stderr)
@@ -113,9 +117,11 @@ def main():
         return 0
 
     print("SMOKE TEST: FAIL")
-    print(f"  banner : {b'[OK] mobile_phone_os phase 3' in buf}")
+    print(f"  banner : {banner in buf}")
     print(f"  uptime : {b's uptime' in buf}")
-    print(f"  rx echo: {b'phase3rx' in buf}")
+    print(f"  rx echo: {echo_tag in buf}")
+    if phase >= "4":
+        print(f"  threads: {b'ping: round' in buf and b'pong: round' in buf}")
     with open(logfile, "rb") as f:
         tail = f.read()[-800:].decode(errors="replace")
     print("--- last serial output ---")

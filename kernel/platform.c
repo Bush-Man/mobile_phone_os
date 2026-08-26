@@ -213,6 +213,29 @@ static void probe_chosen(struct platform_info *pi, const struct fdt *f)
     }
 }
 
+/* /psci: conduit + CPU_ON function id for SMP bring-up */
+static void probe_psci(struct platform_info *pi, const struct fdt *f)
+{
+    int node = fdt_find_node(f, "/psci*");
+    int len;
+    const void *v;
+
+    pi->has_psci = 0;
+    if (node < 0)
+        return;
+
+    v = fdt_getprop(f, node, "method", &len);
+    if (!v || len < 4)
+        return;
+    pi->psci_hvc = compat_is(v, len, "hvc") ? 1 : 0;
+
+    v = fdt_getprop(f, node, "cpu_on", &len);
+    if (!v || len != 4)
+        return;
+    pi->psci_cpu_on_fn = fdt_u32(v);
+    pi->has_psci = 1;
+}
+
 void platform_probe(struct platform_info *pi, const struct fdt *f)
 {
     int root = fdt_find_node(f, "/");
@@ -230,6 +253,7 @@ void platform_probe(struct platform_info *pi, const struct fdt *f)
     probe_serial(pi, f);
     probe_intc(pi, f);
     probe_timer_irq(pi, f);
+    probe_psci(pi, f);
     probe_chosen(pi, f);
 }
 
@@ -250,6 +274,9 @@ void platform_self(struct platform_info *pi)
         pi->gic_version = 0;
         pi->uart_irq = 0;
         pi->timer_irq = IRQ_PPI_VIRT_TIMER;
+        pi->has_psci = 0;
+        pi->psci_hvc = 0;
+        pi->psci_cpu_on_fn = 0;
         return;
     }
     platform_probe(pi, &f);

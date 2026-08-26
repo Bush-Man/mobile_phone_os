@@ -9,7 +9,7 @@ KERNEL  := $(BUILD)/kernel.elf
 IMG     := $(BUILD)/kernel8.img
 
 QEMU       ?= qemu-system-aarch64
-QEMU_ARGS  := -M virt -cpu cortex-a53 -m 128M
+QEMU_ARGS  := -M virt -cpu cortex-a53 -m 128M -smp 2
 
 CFLAGS := -Wall -Wextra -O2 -g \
           -ffreestanding -fno-builtin \
@@ -60,7 +60,7 @@ run: all
 
 test: all
 	@python3 tests/serial_harness.py "$(QEMU)" "$(QEMU_ARGS)" \
-	    $(KERNEL) $(BUILD)/serial.log
+	    $(KERNEL) $(BUILD)/serial.log 4
 
 debug: all
 	$(QEMU) $(QEMU_ARGS) -nographic -kernel $(KERNEL) -S -gdb tcp::1234

@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "lib.h"
+#include "uart.h"
 #include "panic.h"
 
 /* non-zero before any protected function runs; randomized in later phases */
@@ -13,6 +14,7 @@ uintptr_t __stack_chk_guard = 0x5f6cfa7d9e62b415ULL;
 void panic(const char *msg)
 {
     __asm__ volatile("msr daifset, #0xf");
+    uart_panic_mode();
     kprintf("\nPANIC: %s\nSystem halted.\n", msg);
 
     for (;;)

@@ -22,6 +22,9 @@ struct platform_info {
     int      gic_version;       /* probed from compatible string     */
     unsigned uart_irq;          /* console RX line, GIC intid        */
     unsigned timer_irq;         /* architected virtual timer PPI     */
+    int      has_psci;
+    int      psci_hvc;          /* conduit: 1 = hvc, 0 = smc         */
+    uint32_t psci_cpu_on_fn;    /* PSCI_CPU_ON function id           */
 };
 
 void platform_probe(struct platform_info *pi, const struct fdt *f);

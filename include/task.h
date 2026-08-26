@@ -82,6 +82,17 @@ struct waitqueue {
 };
 
 void wait_sleep(struct waitqueue *wq);
+/*
+ * Condition-variable style wait: the predicate is evaluated under the
+ * scheduler lock, so "check then block" cannot lose a wakeup that
+ * happens after the check. The waker changes the condition first,
+ * then calls wait_wake_all().
+ */
+typedef bool (*task_cond_t)(void *ctx);
+
+void wait_sleep_when(task_cond_t cond, void *cond_ctx,
+                     struct waitqueue *wq);
+void wait_sleep(struct waitqueue *wq);          /* unconditional       */
 void wait_wake_all(struct waitqueue *wq);
 
 /* shared table (kernel/task.c, scheduler iterates it) */

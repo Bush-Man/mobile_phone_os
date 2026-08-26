@@ -25,4 +25,13 @@ void uart_rx_irq_init(unsigned intid);
 /* kernel-side drain of the RX ring (SYS_read); returns bytes taken */
 unsigned uart_rx_read(char *dst, unsigned max);
 
+/* ---- phase 6 hooks (tty ownership handover) ------------------------------ */
+
+/* disable/enable the built-in raw echo (tty takes over when attached) */
+void uart_echo_set(bool on);
+
+/* called from the rx top half after each batch of bytes lands in the
+ * ring; when set, the raw echo tasklet is bypassed entirely */
+void uart_rx_notify(void (*fn)(void));
+
 #endif /* UART_H */

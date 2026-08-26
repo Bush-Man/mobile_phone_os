@@ -151,12 +151,36 @@ static bool rx_pop(char *out)
     return got;
 }
 
+/* ---- phase 6 hooks --------------------------------------------------------- */
+
+static bool echo_on = true;
+static void (*rx_notify_fn)(void);
+
+void uart_echo_set(bool on)
+{
+    daif_state s = irq_local_save();
+
+    echo_on = on;
+    irq_local_restore(s);
+}
+
+void uart_rx_notify(void (*fn)(void))
+{
+    daif_state s = irq_local_save();
+
+    rx_notify_fn = fn;
+    irq_local_restore(s);
+}
+
 static void echo_tasklet(void *arg)
 {
     char c;
     daif_state s;
 
     (void)arg;
+    if (!echo_on)
+        return;                 /* tty owns the ring now; leave bytes */
+
     uart_tx_begin(&s);
     while (rx_pop(&c)) {
         uart_putc(c);                       /* raw echo               */
@@ -184,7 +208,11 @@ static bool uart_rx_irq(void *arg)
     }
 
     if (any) {
-        tasklet_schedule(echo_tasklet, NULL);
+        /* phase 6: tty owns the bytes once attached; raw echo until then */
+        if (rx_notify_fn)
+            rx_notify_fn();
+        else
+            tasklet_schedule(echo_tasklet, NULL);
     }
     return true;
 }

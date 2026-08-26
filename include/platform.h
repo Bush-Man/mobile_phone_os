@@ -13,9 +13,15 @@ struct platform_info {
     uint64_t ram_base;
     uint64_t ram_size;
     uint64_t uart_base;
+    uint64_t gicd_base;         /* interrupt controller distributor  */
+    uint64_t gicc_base;         /* ... cpu interface (GICv2)         */
     char     boot_args[PLATFORM_BOOTARGS_MAX];
     int      has_uart;
     int      has_boot_args;
+    int      has_gic;
+    int      gic_version;       /* probed from compatible string     */
+    unsigned uart_irq;          /* console RX line, GIC intid        */
+    unsigned timer_irq;         /* architected virtual timer PPI     */
 };
 
 void platform_probe(struct platform_info *pi, const struct fdt *f);

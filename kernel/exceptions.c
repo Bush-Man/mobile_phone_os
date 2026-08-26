@@ -6,6 +6,7 @@
 #include <stddef.h>
 
 #include "exceptions.h"
+#include "irq.h"
 #include "lib.h"
 #include "mm/types.h"
 #include "panic.h"
@@ -45,6 +46,15 @@ void exceptions_handler(struct trap_frame *tf, unsigned kind)
     uint64_t far;
 
     __asm__ volatile("mrs %0, far_el1" : "=r"(far));
+
+    /*
+     * IRQ/FIQ: hand to the interrupt framework, which acks, runs
+     * handlers and EOIs every pending line before we eret back.
+     */
+    if (kind == EXC_IRQ || kind == EXC_FIQ) {
+        irq_dispatch();
+        return;
+    }
 
     /* experiment mode: skip faulting stores instead of dying */
     if (exp_skip_faults && kind == EXC_SYNC &&

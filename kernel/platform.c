@@ -8,8 +8,10 @@
  */
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "fdt.h"
+#include "irq.h"
 #include "platform.h"
 
 extern const uint8_t _binary_platform_qemu_virt_dtb_start[];
@@ -38,6 +40,27 @@ static uint64_t cells_u64(const uint32_t *p, int cells)
     for (int i = 0; i < cells && i < 2; i++)
         v = (v << 32) | fdt_u32(p + i);
     return v;
+}
+
+/* exact-match helper against one NUL-terminated compatible string */
+static bool compat_is(const char *s, int len, const char *name)
+{
+    while (len > 0 && *name) {
+        if (*s++ != *name++)
+            return false;
+        len--;
+    }
+    return len == 1 && *s == '\0';      /* consumed incl. terminator */
+}
+
+/* bounded string length within a property blob */
+static int prop_strlen(const char *s, int max)
+{
+    int n = 0;
+
+    while (n < max && s[n])
+        n++;
+    return n;
 }
 
 static uint32_t root_cells(const struct fdt *f, const char *prop,
@@ -93,8 +116,82 @@ static void probe_serial(struct platform_info *pi, const struct fdt *f)
         pi->uart_base = cells_u64(reg,
                                   (int)root_cells(f, "#address-cells", 1));
         pi->has_uart  = 1;
+
+        /* GIC interrupt specifier: <type number flags>, 3 cells on
+         * every GIC binding; type 0 = SPI (+32), type 1 = PPI (+16) */
+        reg = fdt_getprop(f, node, "interrupts", &len);
+        if (reg && len >= 12) {
+            uint32_t type = fdt_u32(reg);
+
+            pi->uart_irq = (type == 0) ? fdt_u32(reg + 1) + IRQ_SPI_BASE
+                         : (type == 1) ? fdt_u32(reg + 1) + IRQ_PPI_BASE
+                                       : fdt_u32(reg + 1);
+        }
         return;
     }
+}
+
+/* interrupt-controller node: bases, and version from its compatible */
+static void probe_intc(struct platform_info *pi, const struct fdt *f)
+{
+    int node = fdt_find_node(f, "/intc*");
+    int len;
+    const void *reg;
+    const void *compat;
+    uint32_t ac = root_cells(f, "#address-cells", 2);
+    uint32_t sc = root_cells(f, "#size-cells", 2);
+
+    pi->has_gic = 0;
+    pi->gic_version = 0;
+    if (node < 0)
+        return;
+
+    compat = fdt_getprop(f, node, "compatible", &len);
+    for (const char *s = compat; s && len > 0; ) {
+        int slen = prop_strlen(s, len) + 1;
+
+        if (!pi->gic_version && (compat_is(s, slen, "arm,cortex-a15-gic") ||
+                                 compat_is(s, slen, "arm,gic-400")))
+            pi->gic_version = 2;
+        else if (compat_is(s, slen, "arm,gic-v3"))
+            pi->gic_version = 3;
+        len -= slen;
+        s += slen;
+    }
+
+    /* reg = <gicd-frame><gicc-frame> under the v2 binding */
+    reg = fdt_getprop(f, node, "reg", &len);
+    if (!reg || len < (int)(4 * 2 * (ac + sc)))
+        return;
+
+    pi->gicd_base = cells_u64(reg, ac);
+    pi->gicc_base = cells_u64((const uint32_t *)reg + ac + sc, ac);
+    pi->has_gic   = pi->gicd_base && pi->gicc_base;
+}
+
+/*
+ * Architected timer PPIs are fixed by the architecture but the DTB
+ * still lists them; cross-check our constant against entry 3 of the
+ * standard four-specifier list (sec-phys, ns-phys, virtual, hyp).
+ * Falls back to the architectural value when the node is absent.
+ */
+static void probe_timer_irq(struct platform_info *pi, const struct fdt *f)
+{
+    int node = fdt_find_node(f, "/timer*");
+    int len;
+    const void *irqs;
+
+    pi->timer_irq = IRQ_PPI_VIRT_TIMER;
+    if (node < 0)
+        return;
+
+    irqs = fdt_getprop(f, node, "interrupts", &len);
+    if (!irqs || len < (int)(12 * 3))
+        return;
+
+    /* third specifier is the virtual timer: <PPI 11 flags> */
+    if (fdt_u32((const uint32_t *)irqs + 6) == 1)
+        pi->timer_irq = fdt_u32((const uint32_t *)irqs + 7) + IRQ_PPI_BASE;
 }
 
 static void probe_chosen(struct platform_info *pi, const struct fdt *f)
@@ -130,6 +227,8 @@ void platform_probe(struct platform_info *pi, const struct fdt *f)
 
     probe_memory(pi, f);
     probe_serial(pi, f);
+    probe_intc(pi, f);
+    probe_timer_irq(pi, f);
     probe_chosen(pi, f);
 }
 
@@ -142,8 +241,14 @@ void platform_self(struct platform_info *pi)
         pi->ram_base = 0;
         pi->ram_size = 0;
         pi->uart_base = 0;
+        pi->gicd_base = 0;
+        pi->gicc_base = 0;
         pi->has_uart = 0;
         pi->has_boot_args = 0;
+        pi->has_gic = 0;
+        pi->gic_version = 0;
+        pi->uart_irq = 0;
+        pi->timer_irq = IRQ_PPI_VIRT_TIMER;
         return;
     }
     platform_probe(pi, &f);

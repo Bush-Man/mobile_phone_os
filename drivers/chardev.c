@@ -48,3 +48,8 @@ unsigned char_dev_count(void)
 {
     return ndevs;
 }
+
+struct char_dev *char_dev_at(unsigned idx)
+{
+    return idx < ndevs ? devs[idx] : NULL;
+}

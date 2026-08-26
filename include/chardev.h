@@ -26,5 +26,6 @@ struct char_dev {
 int  char_dev_register(struct char_dev *cd);
 struct char_dev *char_dev_find(const char *name);
 unsigned char_dev_count(void);
+struct char_dev *char_dev_at(unsigned idx);     /* registry order */
 
 #endif /* CHARDEV_H */

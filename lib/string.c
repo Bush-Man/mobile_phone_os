@@ -1,11 +1,15 @@
 /*
  * string.c - the handful of libc memory routines GCC emits calls to
  * even under -ffreestanding (e.g. __builtin_memset with a variable
- * size lowers to memset).
+ * size lowers to memset). Phase 7 added the str* helpers the
+ * filesystem code needs (lib had none until now; subsystems used to
+ * grow private copies -- see p_strlen in kernel/proc.c).
  */
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include "lib.h"
 
 void *memset(void *dst, int c, size_t n)
 {
@@ -54,4 +58,46 @@ int memcmp(const void *a, const void *b, size_t n)
         if (*x != *y)
             return (int)*x - (int)*y;
     return 0;
+}
+
+size_t strlen(const char *s)
+{
+    size_t n = 0;
+
+    while (s[n])
+        n++;
+    return n;
+}
+
+int strcmp(const char *a, const char *b)
+{
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return (int)(uint8_t)*a - (int)(uint8_t)*b;
+}
+
+int strncmp(const char *a, const char *b, size_t n)
+{
+    for (; n; n--, a++, b++) {
+        if (*a != *b)
+            return (int)(uint8_t)*a - (int)(uint8_t)*b;
+        if (!*a)
+            break;
+    }
+    return 0;
+}
+
+size_t kstrlcpy(char *dst, const char *src, size_t cap)
+{
+    size_t slen = strlen(src);
+
+    if (cap) {
+        size_t copy = slen < cap - 1 ? slen : cap - 1;
+
+        memcpy(dst, src, copy);
+        dst[copy] = '\0';
+    }
+    return slen;
 }

@@ -42,6 +42,9 @@ struct proc {
     char         name[PROC_NAME_MAX];
     struct task *task;                  /* backlink                   */
 
+    /* open files (phase 7); NULL = kernel thread / not yet set up  */
+    struct fd_table *fds;
+
     /* address space */
     paddr_t      root_pa;               /* TTBR0 root (ASID-tagged)   */
     uint8_t      asid;

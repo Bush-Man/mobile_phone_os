@@ -33,8 +33,22 @@ struct trap_frame;
 #define ENOMEM 12
 #define EFAULT 14
 #define ECHILD 10
+#define EBUSY  16
+#define EEXIST 17
+#define ENODEV 19
+#define ENOTDIR 20
+#define EISDIR 21
 #define EINVAL 22
+#define EMFILE 24
+#define ENOSPC 28
 #define ENOSYS 38
+#define ENOTEMPTY 39
+/* phase 7: filesystem-oriented extensions */
+#define EIO     5
+#define ENXIO   6
+#define ESPIPE 29
+#define EROFS  30
+#define ENAMETOOLONG 36
 
 /* sync-exception entry point (EC == 0x15, from EL0) */
 void syscall_dispatch(struct trap_frame *tf);

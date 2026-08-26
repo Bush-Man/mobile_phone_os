@@ -14,16 +14,16 @@
 #define VM_DEVICE (1u << 4)         /* Device-nGnRE memory             */
 
 /*
- * Kernel higher-half windows (mapped through TTBR1):
- *   physical address X of RAM    -> KERN_DMAP_BASE    + X
- *   physical address X of MMIO   -> KERN_DEVICE_BASE  + X
- * The kernel keeps executing at its identity-mapped link address for
- * now; these windows give every driver/subsystem a stable view of any
- * physical address regardless of where RAM lives.
+ * Kernel higher-half windows (mapped through TTBR1).
+ * TnSZ = 16 -> each half spans 2^48 bytes and walks start at level 0.
+ * Windows sit in distinct 512 GiB slots so their L0 entries never
+ * collide even when one window spans several gigabytes.
  */
-#define KERN_DMAP_BASE    0xFFFF800000000000ULL
-#define KERN_DEVICE_BASE  0xFFFFC00000000000ULL
-#define KERN_TEST_BASE    0xFFFF900000000000ULL /* scratch for tests */
+#define KERN_UHALF_BASE   0xFFFF000000000000ULL
+#define KERN_DMAP_BASE    (KERN_UHALF_BASE + 0x008000000000ULL) /* +512G */
+#define KERN_TEST_BASE    (KERN_UHALF_BASE + 0x010000000000ULL) /* +1T   */
+#define KERN_HEAP_BASE    (KERN_UHALF_BASE + 0x020000000000ULL) /* +2T   */
+#define KERN_DEVICE_BASE  (KERN_UHALF_BASE + 0x800000000000ULL) /* +8T   */
 
 static inline vaddr_t vmm_dmap(paddr_t pa)
 {

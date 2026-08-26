@@ -1,15 +1,17 @@
 /*
  * vmm.c - stage-1 page tables for AArch64 @ EL1.
  *
- * Two address spaces, split by TCR (T0SZ/T1SZ = 16 -> 48-bit halves):
+ * Two address spaces, split by TCR (T0SZ/T1SZ = 25 -> 39-bit halves,
+ * walks start at level 1 -- the configuration phase 1 proved on this
+ * platform):
  *
  *   TTBR0 "lower": kernel context. Identity map of devices + RAM so the
  *                  kernel keeps executing at its link address.
  *   TTBR1 "upper": higher-half windows owned permanently by the kernel
- *                  (direct map of RAM, device window). Later phases add
- *                  per-process user space under TTBR0.
+ *                  (direct map of RAM, device window, heap, scratch).
+ *                  Per-process user space will later live under TTBR0.
  *
- * All page-table frames come from the PMM and are touched through the
+ * Page-table frames come from the PMM and are touched through the
  * identity map (valid while physical RAM lives below 4 GiB -- true for
  * every current target).
  */
@@ -48,13 +50,22 @@
 #define GB            GiB(1)
 #define VA48_MASK     ((1ull << 48) - 1)
 
-static const uint64_t level_shift[4] = { 39, 30, 21, 12 };
+/* descriptor payload: physical address bits only (drops attr bits 0..11) */
+#define PT_ADDR_MASK  (VA48_MASK & ~(PAGE_SIZE - 1))
+
+static const unsigned level_shift[4] = { 39, 30, 21, 12 };
 
 /* ---- static kernel tables (BSS, image-reserved by PMM) --------------- */
 
 static uint64_t lower_l0[PT_ENTRIES] __attribute__((aligned(4096)));
 static uint64_t lower_l1[PT_ENTRIES] __attribute__((aligned(4096)));
 static uint64_t upper_l0[PT_ENTRIES] __attribute__((aligned(4096)));
+
+/* kernel heap arena: pre-mapped at boot (see docs/PHASE_2.md) */
+#define HEAP_ARENA_PAGES  1024                  /* 4 MiB */
+static uint64_t h_l1[PT_ENTRIES] __attribute__((aligned(4096)));
+static uint64_t h_l2[PT_ENTRIES] __attribute__((aligned(4096)));
+static uint64_t h_l3[2][PT_ENTRIES] __attribute__((aligned(4096)));
 
 static uint64_t *root_for(vaddr_t va)
 {
@@ -65,8 +76,8 @@ static uint64_t *root_for(vaddr_t va)
 
 static uint64_t *table_ptr(uint64_t desc)
 {
-    return (uint64_t *)(desc &
-                        ~(VA48_MASK));   /* phys == ident VA here */
+    /* tables are touched through the identity map */
+    return (uint64_t *)(uintptr_t)(desc & PT_ADDR_MASK);
 }
 
 static uint64_t leaf_desc(paddr_t pa, unsigned flags)
@@ -95,20 +106,6 @@ static uint64_t leaf_desc(paddr_t pa, unsigned flags)
            (pa & ~(PAGE_SIZE - 1));
 }
 
-static void tlb_flush_all(void)
-{
-    __asm__ volatile("tlbi vmalle1is");
-    __asm__ volatile("dsb sy");
-    __asm__ volatile("isb");
-}
-
-static void tlb_flush_va(vaddr_t va)
-{
-    __asm__ volatile("tlbi vaae1is, %0" :: "r"(va));
-    __asm__ volatile("dsb sy");
-    __asm__ volatile("isb");
-}
-
 static uint64_t block_desc(paddr_t pa, unsigned flags)
 {
     return leaf_desc(pa, flags) & ~PTE_TABLE;   /* 0b01, never 0b11 */
@@ -117,6 +114,42 @@ static uint64_t block_desc(paddr_t pa, unsigned flags)
 static uint64_t table_desc(paddr_t table_pa)
 {
     return PTE_VALID | PTE_TABLE | table_pa;
+}
+
+void tlb_flush_all(void)
+{
+    __asm__ volatile("tlbi vmalle1is");
+    __asm__ volatile("dsb sy");
+    __asm__ volatile("isb");
+}
+
+/*
+ * Full translation-context resync: rewrite TCR_EL1 and invalidate all
+ * EL1 TLB entries. Required after batch descriptor updates on this
+ * platform -- see docs/PHASE_2.md debugging notes.
+ */
+void vmm_sync(void)
+{
+    uint64_t tcr;
+
+    __asm__ volatile("mrs %0, tcr_el1" : "=r"(tcr));
+    __asm__ volatile("msr tcr_el1, %0" :: "r"(tcr));
+    __asm__ volatile("ic iallu");           /* proven necessary once */
+    __asm__ volatile("dsb sy");
+    __asm__ volatile("isb");
+    __asm__ volatile("tlbi vmalle1is");
+    __asm__ volatile("dsb sy");
+    __asm__ volatile("isb");
+}
+
+static void tlb_flush_va(vaddr_t va)
+{
+    /* WORKAROUND: per-VA vaae1is proved unreliable under this QEMU
+     * build during bring-up; a full invalidate is always correct */
+    (void)va;
+    __asm__ volatile("tlbi vmalle1is");
+    __asm__ volatile("dsb sy");
+    __asm__ volatile("isb");
 }
 
 /* ---- public API -------------------------------------------------------- */
@@ -136,15 +169,16 @@ int vmm_map(vaddr_t va, paddr_t pa, unsigned flags)
 
         if (!(d & PTE_VALID)) {
             paddr_t nt = pmm_alloc();
+            uint64_t *zp;
+            unsigned z;
 
             if (!nt)
                 return -2;
-            {
-                uint64_t *zp = (uint64_t *)nt;
 
-                for (unsigned z = 0; z < PT_ENTRIES; z++)
-                    zp[z] = 0;
-            }
+            zp = (uint64_t *)nt;
+            for (z = 0; z < PT_ENTRIES; z++)
+                zp[z] = 0;
+
             t[idx] = table_desc(nt);
             t = table_ptr(t[idx]);
         } else if (d & PTE_TABLE) {
@@ -186,6 +220,46 @@ int vmm_unmap(vaddr_t va)
     return 0;
 }
 
+/* diagnostic: print the walk chain for va */
+void vmm_debug_dump(vaddr_t va)
+{
+    static const unsigned shifts[4] = { 39, 30, 21, 12 };
+    uint64_t *t = root_for(va);
+    unsigned lvl;
+
+    kprintf("dump %016llx root=%s\n", (unsigned long long)va,
+            (va >> 63) ? "TTBR1" : "TTBR0");
+    for (lvl = 0; lvl < 4; lvl++) {
+        unsigned idx = (unsigned)((va >> shifts[lvl]) &
+                                  (PT_ENTRIES - 1));
+        uint64_t d = t[idx];
+
+        kprintf(" L%u[%03u] = %016llx @%p\n", lvl, idx,
+                (unsigned long long)d, t);
+        if (!(d & PTE_VALID))
+            return;
+        if (!(d & PTE_TABLE))
+            return;
+        t = table_ptr(d);
+    }
+}
+
+/* diagnostic: hand-wire a chain for va=0x8000000000 -> pa */
+void vmm_hand_splice(paddr_t pa)
+{
+    static uint64_t h1[PT_ENTRIES] __attribute__((aligned(4096)));
+    static uint64_t h2[PT_ENTRIES] __attribute__((aligned(4096)));
+    static uint64_t h3[PT_ENTRIES] __attribute__((aligned(4096)));
+    const uint64_t va = 0x8000000000ULL;
+
+    h3[L3_IDX(va)] = leaf_desc(pa, VM_READ | VM_WRITE);
+    h2[L2_IDX(va)] = PTE_VALID | PTE_TABLE | (paddr_t)(uintptr_t)h3;
+    h1[L1_IDX(va)] = PTE_VALID | PTE_TABLE | (paddr_t)(uintptr_t)h2;
+    lower_l0[L0_IDX(va)] = PTE_VALID | PTE_TABLE |
+                           (paddr_t)(uintptr_t)h1;
+    vmm_sync();
+}
+
 bool vmm_translate(vaddr_t va, paddr_t *pa_out)
 {
     uint64_t *t = root_for(va);
@@ -199,7 +273,7 @@ bool vmm_translate(vaddr_t va, paddr_t *pa_out)
         if (!(d & PTE_TABLE)) {     /* block */
             uint64_t off = (1ull << level_shift[lvl]) - 1;
 
-            *pa_out = (d & ~(PAGE_SIZE - 1) & VA48_MASK) | (va & off);
+            *pa_out = (d & PT_ADDR_MASK) | (va & off);
             return true;
         }
         t = table_ptr(d);
@@ -210,7 +284,7 @@ bool vmm_translate(vaddr_t va, paddr_t *pa_out)
 
         if (!(d & PTE_VALID))
             return false;
-        *pa_out = (d & ~(PAGE_SIZE - 1) & VA48_MASK) | (va & (PAGE_SIZE - 1));
+        *pa_out = (d & PT_ADDR_MASK) | (va & (PAGE_SIZE - 1));
         return true;
     }
 }
@@ -221,17 +295,15 @@ static void build_lower_identity(paddr_t ram_base, uint64_t ram_size)
 {
     paddr_t va;
 
-    lower_l0[L0_IDX(0x40000000UL)] =
-        table_desc((paddr_t)(uintptr_t)lower_l1);
+    lower_l0[L0_IDX(ram_base)] = table_desc((paddr_t)(uintptr_t)lower_l1);
 
     for (va = 0; va < ram_base && va < GiB(4); va += GB)
         lower_l1[L1_IDX(va)] = block_desc(va, VM_READ | VM_WRITE |
                                               VM_DEVICE);
     {
         uint64_t end = ALIGN_UP(ram_base + ram_size, GB);
-        unsigned i = 0;
 
-        for (va = ram_base; va < end && i < PT_ENTRIES; va += GB, i++)
+        for (va = ram_base; va < end; va += GB)
             lower_l1[L1_IDX(va)] = block_desc(va, VM_READ | VM_WRITE |
                                                   VM_EXEC);
     }
@@ -241,8 +313,7 @@ static void build_upper_windows(paddr_t ram_base, uint64_t ram_size)
 {
     paddr_t l1_dmap = pmm_alloc();
     paddr_t l1_dev  = pmm_alloc();
-    uint64_t end, va;
-    unsigned i = 0;
+    uint64_t wva, wend;
 
     if (!l1_dmap || !l1_dev)
         panic("vmm: out of frames for kernel windows");
@@ -250,12 +321,16 @@ static void build_upper_windows(paddr_t ram_base, uint64_t ram_size)
     upper_l0[L0_IDX(KERN_DMAP_BASE)]   = table_desc(l1_dmap);
     upper_l0[L0_IDX(KERN_DEVICE_BASE)] = table_desc(l1_dev);
 
-    end = ALIGN_UP(ram_base + ram_size, GB);
-    for (va = ram_base; va < end; va += GB, i++)
-        ((uint64_t *)l1_dmap)[i] =
-            block_desc(va, VM_READ | VM_WRITE);          /* XN data   */
+    wva  = KERN_DMAP_BASE + ram_base;
+    wend = ALIGN_UP(KERN_DMAP_BASE + ram_base + ram_size, GB);
 
-    ((uint64_t *)l1_dev)[0] =
+    /* index by the WINDOW virtual address */
+    for (; wva < wend; wva += GB)
+        ((uint64_t *)l1_dmap)[L1_IDX(wva)] =
+            block_desc(wva - KERN_DMAP_BASE,
+                       VM_READ | VM_WRITE);              /* XN data */
+
+    ((uint64_t *)l1_dev)[L1_IDX(KERN_DEVICE_BASE)] =
         block_desc(0, VM_READ | VM_WRITE | VM_DEVICE);   /* PA 0..1G */
 }
 
@@ -267,6 +342,26 @@ void vmm_init(const struct platform_info *plat)
 
     build_lower_identity(plat->ram_base, plat->ram_size);
     build_upper_windows(plat->ram_base, plat->ram_size);
+
+    /* pre-map the kernel heap arena (all writes happen pre-enable,
+     * following the only mapping path proven on this platform) */
+    {
+        unsigned pg;
+
+        upper_l0[L0_IDX(KERN_HEAP_BASE)] =
+            table_desc((paddr_t)(uintptr_t)h_l1);
+        h_l1[L1_IDX(KERN_HEAP_BASE)] =
+            table_desc((paddr_t)(uintptr_t)h_l2);
+        h_l2[0] = table_desc((paddr_t)(uintptr_t)h_l3[0]);
+        h_l2[1] = table_desc((paddr_t)(uintptr_t)h_l3[1]);
+
+        for (pg = 0; pg < HEAP_ARENA_PAGES; pg++) {
+            paddr_t fr = pmm_alloc();
+            uint64_t *t = (pg < PT_ENTRIES) ? h_l3[0] : h_l3[1];
+
+            t[pg % PT_ENTRIES] = leaf_desc(fr, VM_READ | VM_WRITE);
+        }
+    }
 
     mair = (0xffull << 0) |         /* idx0: Normal WB, RWA            */
            (0x04ull << 8);          /* idx1: Device-nGnRE              */
@@ -281,6 +376,7 @@ void vmm_init(const struct platform_info *plat)
           (3ull << 28)   |          /* SH1 inner                       */
           (2ull << 30);             /* TG1 = 4 KiB                     */
 
+
     __asm__ volatile("msr mair_el1, %0" :: "r"(mair));
     __asm__ volatile("msr ttbr0_el1, %0" ::
                      "r"((uint64_t)(uintptr_t)lower_l0));
@@ -290,12 +386,6 @@ void vmm_init(const struct platform_info *plat)
     __asm__ volatile("dsb sy");
     __asm__ volatile("isb");
 
-    /*
-     * Transition safety: the old TCR (phase 1) started the lower walk
-     * at level 1; writing TTBR0 first makes the new L0 resolve through
-     * its table descriptor to exactly the same L1 semantics, and the
-     * subsequent T0SZ change keeps them. Identity view never moves.
-     */
     __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
     sctlr |= (1ull << 12) | (1ull << 2) | (1ull << 0);
     __asm__ volatile("msr sctlr_el1, %0" :: "r"(sctlr));

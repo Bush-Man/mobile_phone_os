@@ -62,7 +62,7 @@ test: all
 	@rm -f $(BUILD)/serial.log
 	@timeout 5 $(QEMU) $(QEMU_ARGS) -display none -monitor none \
 	    -serial file:$(BUILD)/serial.log -kernel $(KERNEL) || true
-	@grep -q "\[OK\] mobile_phone_os phase 1" $(BUILD)/serial.log && \
+	@grep -q "\[OK\] mobile_phone_os phase 2" $(BUILD)/serial.log && \
 	    echo "SMOKE TEST: PASS" || \
 	    { echo "SMOKE TEST: FAIL"; cat $(BUILD)/serial.log 2>/dev/null; exit 1; }
 

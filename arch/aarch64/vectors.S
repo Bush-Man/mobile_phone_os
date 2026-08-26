@@ -1,20 +1,48 @@
 /*
  * vectors.S - AArch64 exception vector table for EL1.
  *
- * Layout mandated by ARMv8-A: 16 entries of 128 bytes each
- * (4 kinds x {current EL SP0, current EL SPx, lower EL A64, lower EL A32}).
- * Every stub saves the full trap_frame defined in exceptions.h,
- * calls exceptions_handler(tf, kind), restores state and ERETs.
+ * Layout mandated by ARMv8-A: 16 entries of EXACTLY 128 bytes each.
+ * A full register save/restore does not fit in 128 bytes, so every
+ * slot contains only a branch to a shared full-body trampoline, one
+ * per exception kind. The bodies live right after the table.
  *
- * The interrupted SP equals frame base + 280 (nothing else was pushed),
- * so the frame is released with a single ADD at the end.
+ * Trap-frame offsets are mirrored in struct trap_frame (exceptions.h).
  */
 
 .section .vectors, "ax"
 .align  11                          /* VBAR requires 2 KiB alignment */
 
-.macro STUB kind
+.global vectors_begin
+vectors_begin:
+
+/* 16 slots, 128 bytes each: branch to the matching body */
+.macro SLOT target
     .balign 128
+    b   \target
+.endm
+
+SLOT v_sync
+SLOT v_irq
+SLOT v_fiq
+SLOT v_serror
+SLOT v_sync
+SLOT v_irq
+SLOT v_fiq
+SLOT v_serror
+SLOT v_sync
+SLOT v_irq
+SLOT v_fiq
+SLOT v_serror
+SLOT v_sync
+SLOT v_irq
+SLOT v_fiq
+SLOT v_serror
+
+/* ---- full bodies (outside the table, no size limit) -------------------- */
+
+.macro BODY sym, num
+    .balign 4
+v_\sym:
     sub     sp, sp, #280             /* sizeof(struct trap_frame)     */
     stp     x0, x1,  [sp, #0]
     stp     x2, x3,  [sp, #16]
@@ -39,7 +67,7 @@
     stp     x21, x22, [sp, #248]     /* ESR, ELR                      */
     stp     x23, x24, [sp, #264]     /* SPSR, SP                      */
     mov     x0, sp                   /* arg0: struct trap_frame *     */
-    mov     w1, #\kind               /* arg1: enum exc_kind           */
+    mov     w1, #\num               /* arg1: enum exc_kind           */
     bl      exceptions_handler
     ldp     x21, x22, [sp, #248]
     ldp     x23, x24, [sp, #264]
@@ -66,32 +94,10 @@
     eret
 .endm
 
-.global vectors_begin
-vectors_begin:
-
-/* --- current EL with SP0 --- */
-STUB 0                              /* sync   */
-STUB 1                              /* IRQ    */
-STUB 2                              /* FIQ    */
-STUB 3                              /* SError */
-
-/* --- current EL with SPx --- */
-STUB 0
-STUB 1
-STUB 2
-STUB 3
-
-/* --- lower EL, AArch64 --- */
-STUB 0
-STUB 1
-STUB 2
-STUB 3
-
-/* --- lower EL, AArch32 --- */
-STUB 0
-STUB 1
-STUB 2
-STUB 3
+BODY sync   0
+BODY irq    1
+BODY fiq    2
+BODY serror 3
 
 .global vectors_end
 vectors_end:

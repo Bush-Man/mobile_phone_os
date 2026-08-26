@@ -6,6 +6,14 @@
  * slot contains only a branch to a shared full-body trampoline, one
  * per exception kind. The bodies live right after the table.
  *
+ * Phase 5: exceptions can now come from EL0 (user processes) as
+ * well as EL1. Entry always switches to SP_EL1 automatically, so
+ * the frame lands on the current task's kernel stack either way;
+ * the interrupted SP differs though -- SP_EL0 for lower-EL entry,
+ * sp-on-entry for same-EL. SPSR.M[3:2] selects which value gets
+ * stored into the frame (and which register SP is restored into on
+ * the way out).
+ *
  * Trap-frame offsets are mirrored in struct trap_frame (exceptions.h).
  */
 
@@ -63,7 +71,13 @@ v_\sym:
     mrs     x21, esr_el1             /* scratch after x21 was saved   */
     mrs     x22, elr_el1
     mrs     x23, spsr_el1
-    add     x24, sp, #280            /* interrupted SP                */
+    tst     x23, #0xc                /* SPSR.M[3:2]: 0 => from EL0    */
+    b.ne    9200f
+    mrs     x24, sp_el0              /* interrupted user SP           */
+    b       9201f
+9200:
+    add     x24, sp, #280            /* interrupted kernel SP         */
+9201:
     stp     x21, x22, [sp, #248]     /* ESR, ELR                      */
     stp     x23, x24, [sp, #264]     /* SPSR, SP                      */
     mov     x0, sp                   /* arg0: struct trap_frame *     */
@@ -74,6 +88,10 @@ v_\sym:
     msr     esr_el1, x21             /* restore system registers      */
     msr     elr_el1, x22
     msr     spsr_el1, x23
+    tst     x23, #0xc                /* returning to EL0?             */
+    b.ne    9202f
+    msr     sp_el0, x24              /* user SP back before x24 reload */
+9202:
     ldp     x0, x1,  [sp, #0]
     ldp     x2, x3,  [sp, #16]
     ldp     x4, x5,  [sp, #32]

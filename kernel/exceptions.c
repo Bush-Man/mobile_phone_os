@@ -11,6 +11,8 @@
 #include "lib.h"
 #include "mm/types.h"
 #include "panic.h"
+#include "proc.h"
+#include "syscall.h"
 #include "task.h"
 #include "uart.h"
 
@@ -47,6 +49,7 @@ void exceptions_handler(struct trap_frame *tf, unsigned kind)
     uint64_t esr = tf->esr;
     uint64_t ec = (esr >> 26) & 0x3f;
     uint64_t far;
+    bool from_user = (tf->spsr & 0xc) == 0;     /* SPSR.M[3:2] == EL0 */
 
     /* faults must be able to report even with locks wedged */
     uart_panic_mode();
@@ -57,7 +60,8 @@ void exceptions_handler(struct trap_frame *tf, unsigned kind)
      * IRQ/FIQ: hand to the interrupt framework, which acks, runs
      * handlers and EOIs every pending line. Preemption happens only
      * afterwards, on the way out (sched_post_irq), so no interrupt
-     * is ever left active across a context switch.
+     * is ever left active across a context switch. Before returning
+     * to a user process, pending signals get their chance.
      */
     if (kind == EXC_IRQ || kind == EXC_FIQ) {
         struct per_cpu *pc = this_cpu();
@@ -66,11 +70,35 @@ void exceptions_handler(struct trap_frame *tf, unsigned kind)
         irq_dispatch();
         sched_post_irq();
         pc->in_irq = false;
+        if (from_user)
+            signal_deliver_pending(tf);
         return;
     }
 
+    if (kind == EXC_SYNC) {
+        /* svc from user: the syscall path */
+        if (ec == 0x15 && from_user) {
+            syscall_dispatch(tf);
+            signal_deliver_pending(tf);         /* e.g. kill(self)   */
+            return;
+        }
+
+        /* aborts/alignment faults from user: SIGSEGV-style kill */
+        if (from_user &&
+            (ec == 0x20 || ec == 0x21 || ec == 0x22 ||
+             ec == 0x24 || ec == 0x25 || ec == 0x2c))
+            proc_user_fault(tf, esr, far);      /* never returns     */
+
+        /* an svc issued from inside the kernel is a kernel bug */
+        if (ec == 0x15) {
+            kprintf("\n--- svc from kernel context (EL1 bug) ---\n");
+            kprintf("ELR=%016llx\n", (unsigned long long)tf->elr);
+            panic("kernel-internal svc");
+        }
+    }
+
     /* experiment mode: skip faulting stores instead of dying */
-    if (exp_skip_faults && kind == EXC_SYNC &&
+    if (exp_skip_faults && kind == EXC_SYNC && !from_user &&
         (ec == 0x24 || ec == 0x25)) {
         tf->elr += 4;
         return;

@@ -14,6 +14,7 @@
 #include "mm/vmm.h"
 #include "panic.h"
 #include "platform.h"
+#include "proc.h"
 #include "smp.h"
 #include "task.h"
 #include "tasklet.h"
@@ -51,7 +52,34 @@ static void housekeeping_task(void *arg)
 
 extern const struct platform_info *smp_plat;
 
-#define BANNER "[OK] mobile_phone_os phase 4"
+#define BANNER "[OK] mobile_phone_os phase 5"
+
+/*
+ * Phase 5 milestone demo: spawn the built-in static "hello" ELF at
+ * EL0, then reap it and report the exit code the kernel received.
+ * Runs as its own task so waitpid() can block like any syscall.
+ */
+static void process_demo_task(void *arg)
+{
+    int pid, code, rc;
+
+    (void)arg;
+
+    pid = proc_spawn("hello", (const char *const []){ "hello", NULL },
+                     NULL);
+    if (pid < 0) {
+        kprintf("[demo] hello spawn failed (%d)\n", pid);
+        task_exit();
+    }
+
+    rc = proc_do_waitpid(pid, &code);
+    if (rc == pid)
+        kprintf("[demo] hello exited with code %d\n", code);
+    else
+        kprintf("[demo] waitpid(%d) failed (%d)\n", pid, rc);
+
+    task_exit();
+}
 
 void kmain(uint64_t boot_el, uint64_t dtb_ptr)
 {
@@ -148,6 +176,15 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
 
     sched_demo_start();                     /* ping vs pong forever-ish */
     task_create("housekeep", housekeeping_task, NULL, 50);
+
+    /*
+     * Phase 5: per-process address spaces. Both cpus take their
+     * TCR.A1/CPACR config (boot cpu here, secondaries inside
+     * secondary_start), then the demo task runs the built-in hello
+     * ELF at EL0 and reports its exit code back.
+     */
+    proc_subsys_init();
+    task_create("procdemo", process_demo_task, NULL, 10);
 
     /*
      * Boot context retires here: cpu0 (and each secondary, from its

@@ -42,6 +42,7 @@
 #include "proc.h"
 #include "signal.h"
 #include "spinlock.h"
+#include "syscall.h"
 #include "task.h"
 #include "uaccess.h"
 
@@ -172,28 +173,30 @@ static void asid_release(uint8_t asid)
 
 /* ---- subsystem init --------------------------------------------------------- */
 
-void proc_subsys_init(void)
+/*
+ * Per-cpu half (secondaries run this from their bring-up path):
+ * TCR.A1 = ASIDs come from TTBR0_EL1[63:56], and FP/SIMD traps are
+ * lifted at EL0/EL1. There is still no FP state save across context
+ * switches, so user binaries must stay general-regs-only for now
+ * (the built-in hello does).
+ */
+void proc_cpu_init(void)
 {
     uint64_t tcr;
 
-    /*
-     * Take ASIDs from TTBR0_EL1[63:56] (TCR.A1). Safe only once
-     * every cpu has finished its own vmm_cpu_activate(): after boot
-     * nobody rewrites TCR_EL1 except this call.
-     */
     __asm__ volatile("mrs %0, tcr_el1" : "=r"(tcr));
     tcr |= (1ull << 22);
     __asm__ volatile("msr tcr_el1, %0" :: "r"(tcr));
 
-    /*
-     * Untrap FP/SIMD at EL0 and EL1. There is still no FP state save
-     * across context switches, so user binaries must stay
-     * general-regs-only for now (the built-in hello does).
-     */
     __asm__ volatile("msr cpacr_el1, %0" :: "r"((3ull << 20)));
 
     tlb_flush_all();
+}
 
+/* boot-cpu wrapper: applies the per-cpu config once, then reports */
+void proc_subsys_init(void)
+{
+    proc_cpu_init();
     kprintf("proc: address spaces ready (ASIDs from TTBR0)\n");
 }
 

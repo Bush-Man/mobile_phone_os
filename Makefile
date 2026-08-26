@@ -64,8 +64,8 @@ $(BUILD)/fdt_blob.o: platform/qemu-virt.dtb
 # so it must exist before that object is assembled.
 
 userspace/hello: userspace/hello.c userspace/hello.ld
-	$(CC) $(USER_CFLAGS) -T userspace/hello.ld -Wl,--build-id=none \
-	    -o $@ $<
+	$(CC) $(USER_CFLAGS) -no-pie -T userspace/hello.ld \
+	    -Wl,--build-id=none -o $@ $<
 
 $(BUILD)/arch/aarch64/builtin_imgs.o: userspace/hello
 
@@ -78,7 +78,7 @@ run: all
 
 test: all
 	@python3 tests/serial_harness.py "$(QEMU)" "$(QEMU_ARGS)" \
-	    $(KERNEL) $(BUILD)/serial.log 4
+	    $(KERNEL) $(BUILD)/serial.log 5
 
 debug: all
 	$(QEMU) $(QEMU_ARGS) -nographic -kernel $(KERNEL) -S -gdb tcp::1234

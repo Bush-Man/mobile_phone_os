@@ -26,6 +26,7 @@
 #include "mmio.h"
 #include "panic.h"
 #include "platform.h"
+#include "proc.h"
 #include "smp.h"
 #include "task.h"
 #include "time.h"
@@ -96,6 +97,7 @@ void secondary_start(uint64_t cpu)
     vectors_init();
     gic_cpu_init();
     time_cpu_init();
+    proc_cpu_init();            /* TCR.A1 + FP untrap (phase 5)      */
 
     irq_local_unmask();
 

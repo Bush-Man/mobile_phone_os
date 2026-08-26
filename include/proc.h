@@ -74,7 +74,8 @@ struct proc {
 
 /* ---- subsystem ----------------------------------------------------------- */
 
-void proc_subsys_init(void);            /* TCR.A1 + FP access, after SMP */
+void proc_subsys_init(void);            /* boot cpu: config + report     */
+void proc_cpu_init(void);               /* per-cpu TCR.A1 + FP untrap    */
 
 struct proc *proc_current(void);        /* current task's proc, or NULL  */
 

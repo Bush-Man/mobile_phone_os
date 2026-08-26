@@ -22,6 +22,7 @@
 #include "irq.h"
 #include "lib.h"
 #include "panic.h"
+#include "proc.h"
 #include "spinlock.h"
 #include "task.h"
 #include "time.h"
@@ -97,6 +98,15 @@ void sched_run(uint64_t cpu)
             __asm__ volatile("wfi");
             continue;
         }
+
+        /*
+         * Phase 5: install the incoming task's address space before
+         * it runs. Always written (never compared): one TTBR0+isb
+         * per dispatch is negligible, and "always correct" beats a
+         * cached-decision bug. Kernel threads pass proc == NULL and
+         * get the shared kernel root with reserved ASID 0.
+         */
+        proc_address_space_switch(next->proc);
 
         cpu_switch_to(&pc->sched_ctx, &next->ctx);
         /* back: that task parked itself again */

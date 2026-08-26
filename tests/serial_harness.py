@@ -77,6 +77,10 @@ def main():
         ok = (banner in b and b"s uptime" in b and echo_tag in b)
         if phase >= "4":
             ok = ok and (b"ping: round" in b and b"pong: round" in b)
+        if phase >= "5":
+            ok = ok and (b"running at EL0" in b and
+                         b"hello: exiting 42" in b and
+                         b"exited with code 42" in b)
         return ok
 
     try:
@@ -122,6 +126,10 @@ def main():
     print(f"  rx echo: {echo_tag in buf}")
     if phase >= "4":
         print(f"  threads: {b'ping: round' in buf and b'pong: round' in buf}")
+    if phase >= "5":
+        print(f"  el0 run : {b'running at EL0' in buf}")
+        print(f"  u exit  : {b'hello: exiting 42' in buf}")
+        print(f"  k reaped: {b'exited with code 42' in buf}")
     with open(logfile, "rb") as f:
         tail = f.read()[-800:].decode(errors="replace")
     print("--- last serial output ---")

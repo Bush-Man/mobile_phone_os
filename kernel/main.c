@@ -7,6 +7,7 @@
 #include "el.h"
 #include "exceptions.h"
 #include "gic.h"
+#include "input.h"
 #include "irq.h"
 #include "lib.h"
 #include "mm/kheap.h"
@@ -31,6 +32,7 @@ void sched_demo_start(void);
 void phase6_init(const struct platform_info *plat);
 void phase7_init(const struct platform_info *plat);
 void phase8_init(const struct platform_info *plat);
+void phase9_init(const struct platform_info *plat);
 
 static void housekeeping_task(void *arg)
 {
@@ -40,6 +42,9 @@ static void housekeeping_task(void *arg)
 
     for (;;) {
         tasklet_drain();                /* bottom halves here       */
+
+        /* phase 9: autorepeat engine runs off this cadence         */
+        input_tick_repeats();
 
         /* one uptime line per second */
         if ((long)(jiffies_read() - mark) >= TIME_HZ) {
@@ -55,7 +60,7 @@ static void housekeeping_task(void *arg)
 
 extern const struct platform_info *smp_plat;
 
-#define BANNER "[OK] mobile_phone_os phase 8"
+#define BANNER "[OK] mobile_phone_os phase 9"
 
 /*
  * Phase 5 milestone demo: spawn the built-in static "hello" ELF at
@@ -200,6 +205,15 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
      * milestone proof (see docs/PHASE_8.md).
      */
     phase8_init(&plat);
+
+    /*
+     * Phase 9: graphics & input. Registers the display backend(s)
+     * and the /dev/event0 stream, then spawns "gfxtest" which arms
+     * the virtio-gpu canvas, draws+verifies the UI test pattern,
+     * pushes the calibration events and execs the evreader process
+     * (milestone proof -- see docs/PHASE_9.md).
+     */
+    phase9_init(&plat);
 
     kprintf("%s\n", BANNER);
 

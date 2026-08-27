@@ -72,7 +72,12 @@ userspace/ipcdemo: userspace/ipcdemo.c userspace/ipcdemo.ld
 	$(CC) $(USER_CFLAGS) -no-pie -T userspace/ipcdemo.ld \
 	    -Wl,--build-id=none -o $@ $<
 
-$(BUILD)/arch/aarch64/builtin_imgs.o: userspace/hello userspace/ipcdemo
+userspace/evreader: userspace/evreader.c userspace/evreader.ld
+	$(CC) $(USER_CFLAGS) -no-pie -T userspace/evreader.ld \
+	    -Wl,--build-id=none -o $@ $<
+
+$(BUILD)/arch/aarch64/builtin_imgs.o: userspace/hello userspace/ipcdemo \
+                                       userspace/evreader
 
 dtb:
 	$(QEMU) -M virt -cpu cortex-a53 -m 128M -display none \
@@ -83,7 +88,22 @@ run: all
 
 test: all
 	@python3 tests/serial_harness.py "$(QEMU)" "$(QEMU_ARGS)" \
-	    $(KERNEL) $(BUILD)/serial.log 8
+	    $(KERNEL) $(BUILD)/serial.log 9
+
+# ---- phase 9: graphics + input demo targets -------------------------------
+# virtio-gpu renders into an off-screen host surface by default;
+# override DISPLAYARGS (e.g. make run-display DISPLAYARGS="-display gtk")
+# to see the test pattern live on your desktop.
+DISPLAYARGS ?= -display none
+INPUTDEVS   := -device virtio-gpu-device \
+               -device virtio-tablet-device \
+               -device virtio-keyboard-device
+
+run-display: all disk.img
+	$(QEMU) $(QEMU_ARGS) $(INPUTDEVS) -kernel $(KERNEL) \
+	    $(DISPLAYARGS) -serial stdio \
+	    -drive if=none,file=disk.img,format=raw,id=p6hd \
+	    -device virtio-blk-device,drive=p6hd
 
 debug: all
 	$(QEMU) $(QEMU_ARGS) -nographic -kernel $(KERNEL) -S -gdb tcp::1234

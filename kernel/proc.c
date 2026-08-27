@@ -707,6 +707,7 @@ int proc_spawn(const char *img_name,
         return (int)r;
     }
     p->brk = brk;
+    p->mmap_next = USER_MMAP_BASE;      /* phase 8: mmap window       */
 
     pid = pid_alloc();
     p->pid = pid;
@@ -788,6 +789,7 @@ int proc_do_fork(struct trap_frame *tf)
     child->sig_pending = 0;             /* pending is NOT inherited   */
     child->in_signal = false;
     child->brk = parent->brk;
+    child->mmap_next = parent->mmap_next;   /* private maps inherit */
 
     /* phase 7: fork shares open file descriptions (dup refs)       */
     vfs_proc_fds_inherit(child, parent);

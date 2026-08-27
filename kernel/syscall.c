@@ -14,6 +14,13 @@
  * are stdio opened on /dev/console when devfs is up. Before that
  * (fds == NULL, e.g. images booted without devfs) the legacy raw
  * UART paths below keep phase-5 semantics byte-for-byte.
+ *
+ * Phase 8: IPC + multiplexing surface added (pipe/dup/poll, mmap,
+ * shm*, msg*, socketpair and the unix transport), plus ioctl for
+ * line-discipline switches. Anonymous IPC objects materialize as
+ * fd-table entries exactly like regular files, so read/write on
+ * them already worked before these numbers existed -- only their
+ * CREATION needed syscalls.
  */
 
 #include <stdint.h>
@@ -21,17 +28,24 @@
 #include <stdbool.h>
 
 #include "exceptions.h"
+#include "chardev.h"
+#include "ipc.h"
 #include "irq.h"
 #include "lib.h"
+#include "mm/kheap.h"
+#include "mm/pmm.h"
 #include "mm/types.h"
+#include "mm/vmm.h"
 #include "panic.h"
 #include "proc.h"
 #include "signal.h"
 #include "syscall.h"
 #include "task.h"
 #include "time.h"
+#include "tty.h"
 #include "uaccess.h"
 #include "uart.h"
+#include "unsock.h"
 #include "vfs.h"
 
 typedef long (*sys_fn_t)(uint64_t, uint64_t, uint64_t,
@@ -424,10 +438,421 @@ static long sys_sleep(uint64_t msecs)
     return 0;
 }
 
+#define ENOTTY 25
+/* ---- phase 8: IPC / multiplexing syscalls ---------------------------------- */
+
+#define MMAP_PAGES_MAX  64u             /* 256 KiB per mapping         */
+
+/* console chardev name registered by drivers/tty.c                  */
+#define CONSOLE_DEV_NAME "console"
+
 static long sys_uptime_ms(void)
 {
     return (long)time_uptime_ms();
 }
+
+/*
+ * Resolve an fd to its vnode, for ioctl validation.
+ * Returns NULL when the fd is not open.
+ */
+static struct vnode *fd_vnode_of(struct proc *p, int fd)
+{
+    struct file *f;
+
+    if (!p || !p->fds || fd < 0 || fd >= PROC_FD_MAX)
+        return NULL;
+    f = vfs_fd_get(p->fds, fd);
+    if (!f)
+        return NULL;
+    return f->vn;
+}
+
+static long sys_ioctl(uint64_t fd, uint64_t cmd, uint64_t arg)
+{
+    struct vnode *vn = fd_vnode_of(proc_current(), (int)fd);
+
+    (void)arg;
+    if (!vn)
+        return -EBADF;
+    if (vn->type != V_CHARDEV || !vn->priv ||
+        strncmp(((struct char_dev *)vn->priv)->name,
+                CONSOLE_DEV_NAME, 8))
+        return -ENOTTY;
+
+    switch (cmd) {
+    case 1:                                 /* TTY_RAW            */
+        tty_set_canon(false);
+        return 0;
+    case 2:                                 /* TTY_CANONICAL      */
+        tty_set_canon(true);
+        return 0;
+    default:
+        return -EINVAL;
+    }
+}
+
+/*
+ * SYS_mmap(hint, len): private anonymous memory in the process's
+ * mmap window (L0 idx 5 -> inherited by fork like any other private
+ * mapping). The hint is currently advisory-only -- windows march
+ * upward from first use, which is all this OS's binaries need.
+ *
+ * Frames are allocated BEFORE any table edit so an OOM cannot leave
+ * partial mappings behind and unwinding stays trivial.
+ */
+static long sys_mmap(uint64_t hint, uint64_t len)
+{
+    struct proc *p = proc_current();
+    paddr_t frames[MMAP_PAGES_MAX];
+    unsigned npages;
+    uint64_t va;
+    unsigned i;
+    int rc;
+
+    (void)hint;
+    if (!p || !p->root_pa)
+        return -EINVAL;                     /* kernel threads     */
+    if (!len || len > MMAP_PAGES_MAX * PAGE_SIZE)
+        return -EINVAL;
+
+    npages = (unsigned)((len + PAGE_SIZE - 1) >> PAGE_SHIFT);
+
+    if (p->mmap_next < USER_MMAP_BASE ||
+        p->mmap_next >= USER_SHM_BASE)
+        p->mmap_next = USER_MMAP_BASE;
+    if ((uint64_t)npages * PAGE_SIZE >
+        USER_SHM_BASE - p->mmap_next)
+        return -ENOMEM;
+
+    for (i = 0; i < npages; i++) {
+        frames[i] = pmm_alloc();
+
+        if (!frames[i]) {
+            while (i--)
+                pmm_free(frames[i]);
+            return -ENOMEM;
+        }
+        memset((void *)(uintptr_t)frames[i], 0, PAGE_SIZE);
+    }
+
+    va = p->mmap_next;
+    for (i = 0; i < npages; i++) {
+        rc = vmm_map_at(p->root_pa, va + i * PAGE_SIZE, frames[i],
+                        VM_READ | VM_WRITE | VM_USER);
+        if (rc) {
+            /* nothing was published yet -- drop everything       */
+            while (i < npages)
+                pmm_free(frames[i++]);
+            return -ENOMEM;
+        }
+    }
+
+    p->mmap_next += (uint64_t)npages * PAGE_SIZE;
+    return (long)va;
+}
+
+static long sys_shmget(uint64_t npages)
+{
+    return shm_create((unsigned)npages);
+}
+
+static long sys_shmat(uint64_t id, uint64_t hint)
+{
+    return shm_attach((int)id, hint);
+}
+
+static long sys_shmdt(uint64_t va)
+{
+    return shm_detach(va);
+}
+
+/* install an open description into the caller's fd table          */
+static int fd_install_of(struct proc *p, struct file *f)
+{
+    if (!p->fds && vfs_proc_fds_init(p))
+        return -EMFILE;
+    return vfs_fd_install(p->fds, f);   /* consumes our reference  */
+}
+
+static long sys_pipe(uint64_t ufds)
+{
+    struct proc *p = proc_current();
+    struct file *rf, *wf;
+    int32_t out[2];
+    int rfd, wfd;
+
+    if (!p)
+        return -EINVAL;
+
+    if (pipe_make(&rf, &wf))
+        return -ENFILE;
+
+    rfd = fd_install_of(p, rf);         /* consume refs into table */
+    if (rfd < 0) {
+        file_close(wf);
+        file_close(rf);
+        return -EMFILE;
+    }
+    wfd = fd_install_of(p, wf);
+    if (wfd < 0) {
+        file_close(wf);
+        return -EMFILE;                 /* read end stays installed */
+    }
+
+    out[0] = (int32_t)rfd;              /* [0]=read [1]=write      */
+    out[1] = (int32_t)wfd;
+    if (uacc_copy_out_cur((void *)(uintptr_t)ufds,
+                          out, sizeof(out)))
+        return -EFAULT;
+    return 0;
+}
+
+/* dup(fd): same shared open description under a new number        */
+static long sys_dup(uint64_t fd)
+{
+    struct proc *p = proc_current();
+    struct file *f;
+    int nf;
+
+    if (!p || !p->fds || fd >= PROC_FD_MAX)
+        return -EBADF;
+    if (!(f = vfs_fd_get(p->fds, (int)fd)))
+        return -EBADF;
+    nf = vfs_fd_install(p->fds, f);     /* consumes the get() ref  */
+    return nf;
+}
+
+/*
+ * SYS_poll(ufds, nfds, timeout_ms): rescan-after-wake multiplexing.
+ * Only READY entries get ->got written back; returns how many.
+ */
+static long sys_poll(uint64_t ufds, uint64_t nfds, uint64_t timeout_ms)
+{
+    struct proc *p = proc_current();
+    struct uxpollfd kpf[PROC_FD_MAX];
+    unsigned want = (unsigned)nfds;
+    long ready;
+    bool inf = (timeout_ms == (uint64_t)-1);
+
+    if (!p || !ufds || !want)
+        return -EINVAL;
+    if (want > PROC_FD_MAX)
+        want = PROC_FD_MAX;
+
+    for (;;) {
+        ready = 0;
+
+        if (uacc_copy_in_cur(kpf, (const void *)(uintptr_t)ufds,
+                             sizeof(kpf[0]) * want))
+            return -EFAULT;
+
+        for (unsigned i = 0; i < want; i++) {
+            struct file *f;
+            unsigned m;
+
+            kpf[i].got = 0;
+            if (kpf[i].fd < 0)          /* POSIX: ignored entry    */
+                continue;
+            if (!p->fds ||
+                !(f = vfs_fd_get(p->fds, kpf[i].fd))) {
+                kpf[i].got = (uint16_t)(POLLERR | POLLNVAL);
+                ready++;
+                continue;
+            }
+
+            m = ipc_file_ready(f);
+            m &= (kpf[i].want | POLLERR | POLLHUP);
+            file_close(f);              /* drop scan ref           */
+
+            if (m) {
+                kpf[i].got = (uint16_t)m;
+                ready++;
+            }
+        }
+
+        if (ready || !timeout_ms)
+            break;
+
+        /*
+         * Nothing ready yet: sleep on the coarse IPC wake channel
+         * (any readiness edge wakes us) or time out.
+         */
+        ipc_poll_park(inf ? -1 : (int64_t)timeout_ms);
+    }
+
+    if (uacc_copy_out_cur((void *)(uintptr_t)ufds, kpf,
+                          sizeof(kpf[0]) * want))
+        return -EFAULT;
+    return ready;
+}
+
+/* ---- message queues --------------------------------------------------------- */
+
+static long sys_msgget(uint64_t uname)
+{
+    struct proc *p = proc_current();
+    char name[MQ_NAME_MAX];
+    long nl;
+    int id, hdl;
+    bool created;
+
+    if (!p)
+        return -EINVAL;
+    nl = uacc_strnlen_user_cur((const void *)(uintptr_t)uname,
+                               MQ_NAME_MAX - 1);
+    if (nl <= 0)
+        return nl < 0 ? -EFAULT : -ENOENT;
+    if (uacc_copy_in_cur(name, (const void *)(uintptr_t)uname,
+                         (size_t)nl))
+        return -EFAULT;
+    name[nl] = 0;
+
+    id = mq_open(name, &created);
+    if (id < 0)
+        return id;
+
+    hdl = mq_handle_install(p, id);
+    if (hdl < 0)
+        return hdl;
+    return hdl;                 /* userspace speaks in handles      */
+}
+
+static long sys_msgsnd(uint64_t hdl, uint64_t ubuf, uint64_t len)
+{
+    struct proc *p = proc_current();
+    uint8_t kbuf[MQ_MSG_MAX];
+    int id;
+
+    if (!p || len > MQ_MSG_MAX)
+        return len > MQ_MSG_MAX ? -EMSGSIZE : -EBADF;
+    if ((id = mq_handle_lookup(p, (int)hdl)) < 0)
+        return -EBADF;
+    if (len && uacc_copy_in_cur(kbuf, (const void *)(uintptr_t)ubuf,
+                                (size_t)len))
+        return -EFAULT;
+
+    return mq_send_id(id, kbuf, (size_t)len);
+}
+
+static long sys_msgrcv(uint64_t hdl, uint64_t ubuf, uint64_t buflen)
+{
+    struct proc *p = proc_current();
+    uint8_t kbuf[MQ_MSG_MAX];
+    long got;
+    int id;
+
+    if (!p || !buflen || buflen > MQ_MSG_MAX)
+        return !buflen ? -EINVAL : -EMSGSIZE;
+    if ((id = mq_handle_lookup(p, (int)hdl)) < 0)
+        return -EBADF;
+
+    got = mq_receive_id(id, kbuf, (size_t)buflen);
+    if (got < 0)
+        return got;
+    if (uacc_copy_out_cur((void *)(uintptr_t)ubuf, kbuf, (size_t)got))
+        return -EFAULT;
+    return got;
+}
+
+/* ---- unix-domain sockets ------------------------------------------------------ */
+
+static long sys_socketpair(uint64_t ufds)
+{
+    struct proc *p = proc_current();
+    struct file *fa, *fb;
+    int32_t out[2];
+    int a;
+
+    if (!p)
+        return -EINVAL;
+    if (usocket_pair(&fa, &fb))
+        return -ENFILE;
+
+    a = fd_install_of(p, fa);
+    if (a < 0) {
+        file_close(fb);
+        file_close(fa);
+        return -EMFILE;
+    }
+    {
+        int b = fd_install_of(p, fb);
+
+        if (b < 0) {
+            file_close(fb);
+            return -EMFILE;             /* [0] stays installed      */
+        }
+        out[0] = (int32_t)a;
+        out[1] = (int32_t)b;
+    }
+    if (uacc_copy_out_cur((void *)(uintptr_t)ufds,
+                          out, sizeof(out)))
+        return -EFAULT;
+    return 0;
+}
+
+static long sys_usock_serve(uint64_t upath)
+{
+    struct proc *p = proc_current();
+    char path[USOCK_NAME_MAX];
+    struct file *lf;
+    long nl;
+    int fd;
+
+    if (!p)
+        return -EINVAL;
+    nl = uacc_strnlen_user_cur((const void *)(uintptr_t)upath,
+                               USOCK_NAME_MAX - 1);
+    if (nl <= 0)
+        return nl < 0 ? -EFAULT : -ENOENT;
+    if (uacc_copy_in_cur(path, (const void *)(uintptr_t)upath,
+                         (size_t)nl))
+        return -EFAULT;
+    path[nl] = 0;
+
+    if (usock_serve(path, &lf))
+        return -EADDRINUSE;
+    fd = fd_install_of(p, lf);
+    if (fd < 0) {
+        file_close(lf);
+        return -EMFILE;
+    }
+    return fd;
+}
+
+static long sys_usock_connect(uint64_t upath)
+{
+    struct proc *p = proc_current();
+    char path[USOCK_NAME_MAX];
+    struct file *cf;
+    long nl;
+    int fd, rc;
+
+    if (!p)
+        return -EINVAL;
+    nl = uacc_strnlen_user_cur((const void *)(uintptr_t)upath,
+                               USOCK_NAME_MAX - 1);
+    if (nl <= 0)
+        return nl < 0 ? -EFAULT : -ENOENT;
+    if (uacc_copy_in_cur(path, (const void *)(uintptr_t)upath,
+                         (size_t)nl))
+        return -EFAULT;
+    path[nl] = 0;
+
+    rc = usock_connect(path, &cf);
+    if (rc)
+        return rc;
+    fd = fd_install_of(p, cf);
+    if (fd < 0) {
+        file_close(cf);
+        return -EMFILE;
+    }
+    return fd;
+}
+
+
+
+
+
 
 /* ---- table + dispatch ------------------------------------------------------ */
 
@@ -451,6 +876,21 @@ static const sys_fn_t sys_table[] = {
     [SYS_mkdir]      = (sys_fn_t)sys_mkdir,
     [SYS_rmdir]      = (sys_fn_t)sys_rmdir,
     [SYS_unlink]     = (sys_fn_t)sys_unlink,
+    /* phase 8: IPC + multiplexing */
+    [SYS_ioctl]      = (sys_fn_t)sys_ioctl,
+    [SYS_mmap]       = (sys_fn_t)sys_mmap,
+    [SYS_shmget]     = (sys_fn_t)sys_shmget,
+    [SYS_shmat]      = (sys_fn_t)sys_shmat,
+    [SYS_shmdt]      = (sys_fn_t)sys_shmdt,
+    [SYS_pipe]       = (sys_fn_t)sys_pipe,
+    [SYS_dup]        = (sys_fn_t)sys_dup,
+    [SYS_poll]       = (sys_fn_t)sys_poll,
+    [SYS_msgget]     = (sys_fn_t)sys_msgget,
+    [SYS_msgsnd]     = (sys_fn_t)sys_msgsnd,
+    [SYS_msgrcv]     = (sys_fn_t)sys_msgrcv,
+    [SYS_socketpair] = (sys_fn_t)sys_socketpair,
+    [SYS_usock_serve]   = (sys_fn_t)sys_usock_serve,
+    [SYS_usock_connect] = (sys_fn_t)sys_usock_connect,
 };
 
 void syscall_dispatch(struct trap_frame *tf)

@@ -58,6 +58,7 @@ bool pipe_readable_bytes_left(const struct file *f, size_t *out);
  * Mappings live in the dedicated user SHM window -- USER_SHM_BASE,
  * defined in include/proc.h next to the rest of the VA layout (L0
  * index USER_SHM_L0, deliberately outside the fork/teardown range).
+ */
 
 /* Create an npages-sized zeroed object; returns id >= 0 or errno.  */
 int  shm_create(unsigned npages);
@@ -117,6 +118,7 @@ unsigned mq_pending_count(int id);              /* selftest probe    */
 #define POLLOUT     0x004u
 #define POLLERR     0x008u
 #define POLLHUP     0x010u
+#define POLLNVAL    0x020u
 
 /* intrinsic readiness of an open description, unfiltered */
 unsigned ipc_file_ready(const struct file *f);

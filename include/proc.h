@@ -86,6 +86,9 @@ struct proc {
     /* heap top for SYS_brk (page above the highest loaded byte)   */
     vaddr_t      brk;
 
+    /* phase 8: next free VA for SYS_mmap private mappings          */
+    vaddr_t      mmap_next;
+
     /*
      * Phase 8 IPC state. Shared-memory attach slots use va == 0 as
      * "free" (real VAs always sit in the SHM window far away), and

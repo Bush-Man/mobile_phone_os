@@ -689,6 +689,8 @@ int f_lseek(struct file *f, int64_t off, int whence, int64_t *out)
         return -EINVAL;
     if (f->vn->type == V_DIR)
         return -EISDIR;
+    if (f->vn->type == V_PIPE || f->vn->type == V_SOCK)
+        return -ESPIPE;             /* IPC endpoints are not seekable */
 
     switch (whence) {
     case SEEK_SET:

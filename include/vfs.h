@@ -67,6 +67,9 @@ enum vtype {
     V_DIR,
     V_CHARDEV,
     V_BLOCKDEV,
+    /* phase 8: anonymous IPC nodes (never reachable via path)     */
+    V_PIPE,                     /* one end of a pipe                  */
+    V_SOCK,                     /* unix-domain socket endpoint        */
 };
 
 struct vnode;
@@ -99,6 +102,14 @@ struct vnode_ops {
     long (*write)(struct vnode *vn, uint64_t off,
                   const void *buf, size_t len);
     int (*getattr)(struct vnode *vn, struct vattr *out);
+
+    /*
+     * Phase 8 (poll multiplexing): report currently-true readiness
+     * conditions as a POLLIN/POLLOUT/POLLHUP bitmask without ever
+     * blocking. Optional; the poll syscall treats absent ->poll as
+     * "always ready both ways" so regular files never stall it.
+     */
+    unsigned (*poll)(struct vnode *vn);
 
     /* called by vn_unref when the last reference drops */
     void (*destroy)(struct vnode *vn);

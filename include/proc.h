@@ -37,6 +37,10 @@
 #define PROC_NAME_MAX   16
 #define PROC_KSTACK     (16u * 1024u)   /* dedicated kernel-mode stack  */
 
+/* phase 8 IPC resource budgets owned per process (see include/ipc.h) */
+#define PROC_SHM_MAX     4u             /* attached shm regions        */
+#define PROC_MQ_MAX      4u             /* open message-queue handles  */
+
 struct proc {
     int          pid;
     char         name[PROC_NAME_MAX];
@@ -59,6 +63,20 @@ struct proc {
 
     /* heap top for SYS_brk (page above the highest loaded byte)   */
     vaddr_t      brk;
+
+    /*
+     * Phase 8 IPC state. Shared-memory attach slots use va == 0 as
+     * "free" (real VAs always sit in the SHM window far away), and
+     * message-queue handles are 1-based with 0 meaning free -- so a
+     * zero-filled struct starts fully closed, and fork children
+     * inherit nothing here by design.
+     */
+    struct shm_map {
+        uint64_t va;                /* 0 = free                     */
+        unsigned npages;
+        int      id;
+    } shm_maps[PROC_SHM_MAX];
+    uint8_t      mq_handles[PROC_MQ_MAX];   /* id+1; 0 = free       */
 
     /* signals */
     uint32_t     sig_pending;

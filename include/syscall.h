@@ -48,6 +48,8 @@ struct trap_frame;
 #define EISDIR 21
 #define EINVAL 22
 #define EMFILE 24
+#define ENFILE 23
+#define EPIPE  32
 #define ENOSPC 28
 #define ENOSYS 38
 #define ENOTEMPTY 39
@@ -57,6 +59,13 @@ struct trap_frame;
 #define ESPIPE 29
 #define EROFS  30
 #define ENAMETOOLONG 36
+/* phase 8: IPC extensions */
+#define EPIPE  32
+#define EMSGSIZE 90
+#define ENOBUFS 105
+#define EADDRINUSE 98
+#define ENOTCONN 107
+#define ENOTSOCK 88
 
 /* sync-exception entry point (EC == 0x15, from EL0) */
 void syscall_dispatch(struct trap_frame *tf);

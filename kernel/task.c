@@ -69,6 +69,7 @@ static void task_prime(struct task *t, const char *name,
     t->quantum_left = 0;
     t->wake_at = 0;
     t->wq_next = NULL;
+    t->lock_wait = NULL;
     t->name  = name;
     t->fn    = fn;
     t->arg   = arg;

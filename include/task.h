@@ -31,6 +31,15 @@ struct task {
     void (*fn)(void *arg);
     void *arg;
     struct proc *proc;              /* NULL = kernel thread (ph. 5) */
+
+    /*
+     * Phase 8 sync layer: while this task intends to sleep on a
+     * mutex/semaphore it points at that kmutex/ksem. Written and
+     * cleared under the sync core's own lock, which is also how the
+     * deadlock detector walks ownership chains without racing.
+     * NULL whenever blocked somewhere else (or running).
+     */
+    void *lock_wait;
 };
 
 /* ---- lifecycle ---------------------------------------------------------- */

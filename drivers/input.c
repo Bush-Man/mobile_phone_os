@@ -14,6 +14,7 @@
 #include "chardev.h"
 #include "irq.h"
 #include "lib.h"
+#include "pm.h"
 #include "spinlock.h"
 #include "task.h"
 #include "time.h"
@@ -124,6 +125,9 @@ void input_push(uint16_t type, uint16_t code, int32_t value)
         if (preempt && this_cpu()->current)
             this_cpu()->need_resched = true;
     }
+
+    /* phase 10: every event counts as power-management activity    */
+    pm_input_activity();
 }
 
 /* ---- consumer ---------------------------------------------------------------------- */

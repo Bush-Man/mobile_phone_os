@@ -21,7 +21,9 @@
 #include "cpu.h"
 #include "irq.h"
 #include "lib.h"
+#include "mm/kheap.h"
 #include "panic.h"
+#include "pm.h"
 #include "proc.h"
 #include "spinlock.h"
 #include "task.h"
@@ -95,7 +97,14 @@ void sched_run(uint64_t cpu)
         spin_unlock_irqrestore(&task_state_lock, s);
 
         if (!next) {
-            __asm__ volatile("wfi");
+            /*
+             * Phase 10: idle goes through the PM governor now --
+             * WFI stays the implemented depth (GIC-armed interrupt
+             * paths are the wake sources by construction), the
+             * governor owns the accounting and the extension point
+             * for deeper states on real boards.
+             */
+            pm_cpu_idle(cpu);
             continue;
         }
 

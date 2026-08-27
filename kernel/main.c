@@ -9,6 +9,9 @@
 #include "gic.h"
 #include "input.h"
 #include "irq.h"
+#include "battery.h"
+#include "pm.h"
+#include "psci.h"
 #include "lib.h"
 #include "mm/kheap.h"
 #include "mm/pmm.h"
@@ -33,6 +36,7 @@ void phase6_init(const struct platform_info *plat);
 void phase7_init(const struct platform_info *plat);
 void phase8_init(const struct platform_info *plat);
 void phase9_init(const struct platform_info *plat);
+void phase10_init(const struct platform_info *plat);
 
 static void housekeeping_task(void *arg)
 {
@@ -45,6 +49,15 @@ static void housekeeping_task(void *arg)
 
         /* phase 9: autorepeat engine runs off this cadence         */
         input_tick_repeats();
+
+        /*
+         * phase 10: display suspend policy + 1 Hz battery sampling
+         * and warn transitions ride the same housekeeping loop --
+         * zero dedicated tasks for the whole PM subsystem.
+         */
+        ms = time_uptime_ms();
+        pm_display_tick(ms);
+        battery_poll_tick(ms);
 
         /* one uptime line per second */
         if ((long)(jiffies_read() - mark) >= TIME_HZ) {
@@ -60,7 +73,7 @@ static void housekeeping_task(void *arg)
 
 extern const struct platform_info *smp_plat;
 
-#define BANNER "[OK] mobile_phone_os phase 9"
+#define BANNER "[OK] mobile_phone_os phase 10"
 
 /*
  * Phase 5 milestone demo: spawn the built-in static "hello" ELF at
@@ -103,6 +116,9 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
     kprintf("\nmobile_phone_os kernel\n");
 
     el_drop_to_el1();
+
+    /* phase 10: PSCI layer snapshot for reset/off/suspend paths    */
+    psci_init(&plat);
     kprintf("bringup: running at EL%llu (boot EL%llu)\n",
             (unsigned long long)el_current(),
             (unsigned long long)boot_el);
@@ -149,6 +165,14 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
     time_init(&plat);
     kprintf("time: %u Hz system counter, %u Hz tick (INTID %u)\n",
             time_counter_hz(), TIME_HZ, plat.timer_irq);
+
+    /*
+     * phase 10: wake-source table (item 54). The port keeps the GIC
+     * armed across WFI, so these SPIs/PPIs ARE the wake events; real
+     * deeper-state boards extend this table with per-depth masks.
+     */
+    pm_wake_source_note(plat.timer_irq, "timer");
+    pm_wake_source_note(plat.uart_irq, "uart-rx");
 
     uart_rx_irq_init(plat.uart_irq);
     kprintf("uart: interrupt-driven echo armed\n");
@@ -214,6 +238,16 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
      * (milestone proof -- see docs/PHASE_9.md).
      */
     phase9_init(&plat);
+
+    /*
+     * Phase 10: power management & battery. PSCI system layer came
+     * online at boot (platform snapshot), the idle governor took
+     * over the scheduler's WFI branch, wake sources are noted, and
+     * the battery registry has either a real PMIC gauge or the QEMU
+     * mock. pmtest exercises the pure policy paths, a live display
+     * blank/wake cycle and the PSCI conduit -- see docs/PHASE_10.md.
+     */
+    phase10_init(&plat);
 
     kprintf("%s\n", BANNER);
 

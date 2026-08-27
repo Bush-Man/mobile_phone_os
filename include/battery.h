@@ -39,6 +39,7 @@ struct battery_provider {
 int      battery_provider_register(struct battery_provider *p);
 unsigned battery_provider_count(void);
 struct battery_provider *battery_active(void);
+bool     battery_snapshot_get(struct battery_state *out);  /* cached */
 const char *battery_charger_hint(int current_ma);
 
 /* polling hook driven from housekeeping (~2 ms cadence internally

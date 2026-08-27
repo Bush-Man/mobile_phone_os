@@ -138,16 +138,30 @@ void battery_thresholds_get(uint8_t *w, uint8_t *c)
  * inside any CI window. Mock data is marked so the shutdown funnel
  * never mistakes it for reality.
  */
+/*
+ * QEMU mock provider. 1% per ~6 s of uptime when unseeded; once the
+ * selftest (or anyone) calls battery_mock_force(), that percentage
+ * sticks so policy flows are deterministic regardless of wall time.
+ */
+static int8_t mock_forced_pct = -1;     /* <0 = follow uptime curve   */
+
 static int mock_read(struct battery_provider *self,
                      struct battery_state *out)
 {
     uint64_t sec = time_uptime_ms() / 1000u;
+    uint8_t pct;
 
     (void)self;
+
+    if (mock_forced_pct >= 0)
+        pct = (uint8_t)mock_forced_pct;
+    else
+        pct = (uint8_t)(100u - (sec / 6u) % 101u);
+
     out->present     = true;
-    out->voltage_mv  = 3300u + (uint16_t)(out->percent * 7u);
+    out->percent     = pct;
+    out->voltage_mv  = (uint16_t)(3300u + (uint16_t)pct * 7u);
     out->current_ma  = -180;            /* light load draw           */
-    out->percent     = (uint8_t)(100u - (sec / 6u) % 101u);
     out->temp_deci_c = 310;
     out->age_ms      = (uint32_t)sec;
     return 0;
@@ -164,27 +178,25 @@ bool battery_mock_attached(void)
     return it && it->is_mock;
 }
 
-/* selftest hook: injects a percent directly into the cache         */
+/* selftest hook: injects a percent that sticks until re-forced    */
 void battery_mock_force(uint8_t percent)
 {
     struct battery_state st;
+    daif_state s;
 
-    battery_snapshot_get(&st);
+    mock_forced_pct = (int8_t)(percent > 100u ? 100u : percent);
+
     memset(&st, 0, sizeof(st));
     st.present   = true;
-    st.percent   = percent;
+    st.percent   = mock_forced_pct;
     st.voltage_mv = 3300;
     st.current_ma = -100;
     st.temp_deci_c = 300;
     st.age_ms    = (uint32_t)time_uptime_ms();
 
-    {
-        daif_state s;
-
-        spin_lock_irqsave(&batt.lock, &s);
-        batt.last = st;
-        spin_unlock_irqrestore(&batt.lock, s);
-    }
+    spin_lock_irqsave(&batt.lock, &s);
+    batt.last = st;
+    spin_unlock_irqrestore(&batt.lock, s);
 }
 
 

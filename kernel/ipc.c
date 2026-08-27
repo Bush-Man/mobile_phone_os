@@ -129,8 +129,8 @@ void ipc_poll_park(int64_t timeout_ms)
 
 /* ---- anonymous vnode factory ------------------------------------------------- */
 
-static struct vnode *anon_vnode(enum vtype t, const struct vnode_ops *ops,
-                                void *priv)
+struct vnode *ipc_anon_vnode(enum vtype t, const struct vnode_ops *ops,
+                             void *priv)
 {
     struct vnode *vn = kzalloc(sizeof(*vn));
 
@@ -379,8 +379,8 @@ int pipe_make(struct file **rd_out, struct file **wr_out)
     p->readers = 1;
     p->writers = 1;
 
-    rvn = anon_vnode(V_PIPE, &pipe_rd_ops, p);
-    wvn = anon_vnode(V_PIPE, &pipe_wr_ops, p);
+    rvn = ipc_anon_vnode(V_PIPE, &pipe_rd_ops, p);
+    wvn = ipc_anon_vnode(V_PIPE, &pipe_wr_ops, p);
     rf = rvn ? file_alloc(rvn, O_RDONLY) : NULL;
     wf = wvn ? file_alloc(wvn, O_WRONLY) : NULL;
 

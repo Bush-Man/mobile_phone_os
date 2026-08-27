@@ -66,6 +66,7 @@ struct trap_frame;
 #define EADDRINUSE 98
 #define ENOTCONN 107
 #define ENOTSOCK 88
+#define ECONNREFUSED 111
 
 /* sync-exception entry point (EC == 0x15, from EL0) */
 void syscall_dispatch(struct trap_frame *tf);

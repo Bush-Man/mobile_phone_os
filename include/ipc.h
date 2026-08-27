@@ -6,6 +6,7 @@
 #include <stdbool.h>
 
 #include "task.h"
+#include "vfs.h"
 
 struct file;
 struct proc;
@@ -40,6 +41,10 @@ struct proc;
  * Each end keeps the pipe alive until closed.
  */
 int pipe_make(struct file **rd_out, struct file **wr_out);
+
+/* shared anonymous-vnode factory (pipes and unix sockets use it)  */
+struct vnode *ipc_anon_vnode(enum vtype t, const struct vnode_ops *ops,
+                             void *priv);
 
 /* state probes used by selftests (no locking side effects) */
 bool pipe_readable_bytes_left(const struct file *f, size_t *out);

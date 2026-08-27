@@ -30,6 +30,7 @@ void sched_selftest(void);
 void sched_demo_start(void);
 void phase6_init(const struct platform_info *plat);
 void phase7_init(const struct platform_info *plat);
+void phase8_init(const struct platform_info *plat);
 
 static void housekeeping_task(void *arg)
 {
@@ -54,7 +55,7 @@ static void housekeeping_task(void *arg)
 
 extern const struct platform_info *smp_plat;
 
-#define BANNER "[OK] mobile_phone_os phase 5"
+#define BANNER "[OK] mobile_phone_os phase 8"
 
 /*
  * Phase 5 milestone demo: spawn the built-in static "hello" ELF at
@@ -189,6 +190,16 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
      * proves file persistence across reboots -- see docs/PHASE_7.md).
      */
     phase7_init(&plat);
+
+    /*
+     * Phase 8: IPC, sync & the POSIX-ish surface. Registers the
+     * pipe/shm/mqueue/socket pools, then spawns "ipctest" (mutex,
+     * detector, semaphore, pipe, shm and unix-socket battery) and
+     * the "ipcdemo" starter, whose built-in EL0 binary forks two
+     * processes talking through a pipe AND shared memory -- the
+     * milestone proof (see docs/PHASE_8.md).
+     */
+    phase8_init(&plat);
 
     kprintf("%s\n", BANNER);
 

@@ -18,3 +18,10 @@ builtin_hello_start:
     .incbin "userspace/hello"
 .global builtin_hello_end
 builtin_hello_end:
+
+.align 3
+.global builtin_ipcdemo_start
+builtin_ipcdemo_start:
+    .incbin "userspace/ipcdemo"
+.global builtin_ipcdemo_end
+builtin_ipcdemo_end:

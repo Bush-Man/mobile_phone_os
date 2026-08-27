@@ -62,6 +62,14 @@ void kmutex_unlock(struct kmutex *m);
 
 bool kmutex_owned_by_current(const struct kmutex *m);
 
+/*
+ * First parked waiter, or NULL. Debug/selftest surface over the
+ * same data the detector walks -- lets tests confirm an intent
+ * edge is PUBLISHED before relying on detection side effects
+ * (avoids racing into a real hang).
+ */
+struct task *kmutex_first_waiter(const struct kmutex *m);
+
 /* ---- semaphore ---------------------------------------------------------------- */
 
 struct ksem {

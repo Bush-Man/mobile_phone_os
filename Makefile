@@ -60,14 +60,19 @@ $(BUILD)/fdt_blob.o: platform/qemu-virt.dtb
 	    --rename-section .data=.rodata.fdt,alloc,load,readonly,data,contents $< $@
 
 # ---- userspace (phase 5) ------------------------------------------------
-# builtin_imgs.S embeds userspace/hello verbatim (ELF headers and all),
-# so it must exist before that object is assembled.
+# builtin_imgs.S embeds userspace/hello and userspace/ipcdemo verbatim
+# (ELF headers and all), so both must exist before that object is
+# assembled.
 
 userspace/hello: userspace/hello.c userspace/hello.ld
 	$(CC) $(USER_CFLAGS) -no-pie -T userspace/hello.ld \
 	    -Wl,--build-id=none -o $@ $<
 
-$(BUILD)/arch/aarch64/builtin_imgs.o: userspace/hello
+userspace/ipcdemo: userspace/ipcdemo.c userspace/ipcdemo.ld
+	$(CC) $(USER_CFLAGS) -no-pie -T userspace/ipcdemo.ld \
+	    -Wl,--build-id=none -o $@ $<
+
+$(BUILD)/arch/aarch64/builtin_imgs.o: userspace/hello userspace/ipcdemo
 
 dtb:
 	$(QEMU) -M virt -cpu cortex-a53 -m 128M -display none \
@@ -78,7 +83,7 @@ run: all
 
 test: all
 	@python3 tests/serial_harness.py "$(QEMU)" "$(QEMU_ARGS)" \
-	    $(KERNEL) $(BUILD)/serial.log 5
+	    $(KERNEL) $(BUILD)/serial.log 8
 
 debug: all
 	$(QEMU) $(QEMU_ARGS) -nographic -kernel $(KERNEL) -S -gdb tcp::1234

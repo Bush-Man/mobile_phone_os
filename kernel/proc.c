@@ -51,6 +51,8 @@
 /* built-in images embedded by arch/aarch64/builtin_imgs.S */
 extern const uint8_t builtin_hello_start[];
 extern const uint8_t builtin_hello_end[];
+extern const uint8_t builtin_ipcdemo_start[];
+extern const uint8_t builtin_ipcdemo_end[];
 
 struct builtin_image {
     const char  *name;
@@ -60,6 +62,7 @@ struct builtin_image {
 
 static const struct builtin_image builtins[] = {
     { "hello", builtin_hello_start, builtin_hello_end },
+    { "ipcdemo", builtin_ipcdemo_start, builtin_ipcdemo_end },
 };
 
 #define PROC_PRIO 10

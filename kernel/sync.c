@@ -272,6 +272,17 @@ bool kmutex_owned_by_current(const struct kmutex *m)
     return t != NULL && m->owner == t;
 }
 
+struct task *kmutex_first_waiter(const struct kmutex *m)
+{
+    struct task *t;
+    daif_state s;
+
+    spin_lock_irqsave(&sync_lock, &s);
+    t = m->wq.head;
+    spin_unlock_irqrestore(&sync_lock, s);
+    return t;
+}
+
 /* ---- semaphore ------------------------------------------------------------------ */
 
 void ksem_init(struct ksem *s, const char *name,

@@ -53,12 +53,11 @@ bool pipe_readable_bytes_left(const struct file *f, size_t *out);
 
 #define SHM_PAGE_MAX    16u             /* frames per object           */
 #define SHM_OBJS_MAX     8u
-#define PROC_SHM_MAX     4u             /* attaches per process        */
 
-/* SHM window: user VAs reserved for mappings (see include/proc.h)  */
-#ifndef USER_SHM_BASE
-#define USER_SHM_BASE   0x030000000000ULL
-#endif
+/*
+ * Mappings live in the dedicated user SHM window -- USER_SHM_BASE,
+ * defined in include/proc.h next to the rest of the VA layout (L0
+ * index USER_SHM_L0, deliberately outside the fork/teardown range).
 
 /* Create an npages-sized zeroed object; returns id >= 0 or errno.  */
 int  shm_create(unsigned npages);

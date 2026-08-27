@@ -320,7 +320,8 @@ static long sys_execve(uint64_t uname, uint64_t uargv, uint64_t uenvp)
      * the built-in image set is tiny.
      */
     {
-        long nl = uacc_strnlen_user_cur(uname, sizeof(name) - 1);
+        long nl = uacc_strnlen_user_cur((const void *)(uintptr_t)uname,
+                                        sizeof(name) - 1);
 
         if (nl < 0 || !nl)
             return -ENOENT;
@@ -342,7 +343,8 @@ static long sys_execve(uint64_t uname, uint64_t uargv, uint64_t uenvp)
         if (!ap)
             break;
         {
-            long sl = uacc_strnlen_user_cur(ap, sizeof(argv_store[i]) - 1);
+            long sl = uacc_strnlen_user_cur(
+                (const void *)(uintptr_t)ap, sizeof(argv_store[i]) - 1);
             long r;
 
             if (sl < 0)
@@ -367,7 +369,8 @@ static long sys_execve(uint64_t uname, uint64_t uargv, uint64_t uenvp)
                 return -EFAULT;
             if (!ep)
                 break;
-            sl = uacc_strnlen_user_cur(ep, sizeof(envp_store[i]) - 1);
+            sl = uacc_strnlen_user_cur((const void *)(uintptr_t)ep,
+                                       sizeof(envp_store[i]) - 1);
             if (sl < 0)
                 return -EFAULT;
             r = uacc_copy_in_cur(envp_store[i], (const void *)(uintptr_t)ep,

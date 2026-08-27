@@ -31,6 +31,21 @@ struct trap_frame;
 #define SYS_mkdir     17
 #define SYS_rmdir     18
 #define SYS_unlink    19
+/* phase 8: IPC, sync and the stabilized POSIX-ish surface */
+#define SYS_ioctl     20
+#define SYS_mmap      21
+#define SYS_shmget    22
+#define SYS_shmat     23
+#define SYS_shmdt     24
+#define SYS_pipe      25
+#define SYS_dup       26
+#define SYS_poll      27
+#define SYS_msgget    28
+#define SYS_msgsnd    29
+#define SYS_msgrcv    30
+#define SYS_socketpair 31
+#define SYS_usock_serve 32
+#define SYS_usock_connect 33
 
 /* minimal errno subset (values match Linux/aarch64) */
 #define EPERM   1

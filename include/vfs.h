@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "lib.h"                /* strlen for ux_dirent_len below  */
 #include "spinlock.h"
 
 struct block_device;
@@ -163,6 +164,19 @@ static inline size_t ux_dirent_len(const char *name)
 
     return (need + UX_DIRENT_ALIGN - 1) & ~(UX_DIRENT_ALIGN - 1);
 }
+
+/*
+ * Phase 8 poll multiplexing ABI: SYS_poll takes an array of these
+ * (8 bytes each, packed), reads ->want and fills ->got for every
+ * READY descriptor before returning the ready count. Compact on
+ * purpose: only ready entries are written back (a libc can expand
+ * this into POSIX poll semantics later).
+ */
+struct uxpollfd {
+    int32_t  fd;
+    uint16_t want;
+    uint16_t got;
+} __attribute__((packed));
 
 /* ---- subsystem + mounts ------------------------------------------------- */
 

@@ -11,7 +11,8 @@
 #include "task.h"
 
 /*
- * Process = task + private address space (phase 5).
+ * Process = task + private address space (phase 5, stabilized in
+ * phase 8).
  *
  * A process is a struct task whose ->proc field points at one of
  * these. Kernel threads keep proc == NULL and run on the shared
@@ -19,18 +20,39 @@
  * ASID-tagged root table that shares the kernel's identity-mapped
  * subtree at L0 index 0.
  *
- * User virtual layout (48-bit lower half, T0SZ=16):
+ * User virtual layout (48-bit lower half, T0SZ=16, L0 index =
+ * va >> 39, one index spans 512 GiB):
  *
- *   0x0000_0000_0000 .. <512 GiB   kernel identity subtree (EL1 only)
- *   0x0100_0000_0000               program base (L0 idx 8), grows up
- *   0x0200_0000_0000               stack top (L0 idx 16), grows down
- *   < 0x0400_0000_0000             uaccess validity limit
+ *   idx 0        kernel identity subtree spliced into every root
+ *   idx 1        unused
+ *   0x0100_0000_0000 ..          program image (idx 2), loader maps
+ *                                PT_LOADs upward; brk continues past
+ *                                it upward through idx 3/4 space
+ *   0x0200_0000_0000             stack top (grows down; the 256 KiB
+ *                                reservation stays inside idx 4)
+ *   idx 3                        unused spacer between heap room and
+ *                                the stack, kept out of the image
+ *   0x0280_0000_0000 ..          SYS_mmap private anonymous window
+ *                                (idx 5): inherited by fork like any
+ *                                other private memory
+ *   0x0300_0000_0000 ..          shared-memory attach window (idx 6):
+ *                                EXCLUDED from fork copies and from
+ *                                address-space teardown -- the shm
+ *                                object owns those frames (ipc.c)
+ *   < 0x0400_0000_0000           uaccess validity limit
+ *
+ * The teardown/fork range below ([USER_L0_LO, USER_L0_HI)) covers
+ * indices 2..5 inclusive; index 6 must never enter it.
  */
-#define USER_L0_LO      8u              /* first L0 index owned by user */
-#define USER_L0_HI      16u             /* one past the last            */
+#define USER_L0_LO      2u              /* first L0 index owned by user */
+#define USER_MMAP_L0    5u              /* private anon-mmap window    */
+#define USER_SHM_L0     6u              /* shared-memory attach window */
+#define USER_L0_HI      6u              /* ONE PAST last INHERITED idx */
 
 #define USER_CODE_BASE  0x0000010000000000ULL
 #define USER_STACK_TOP  0x0000020000000000ULL
+#define USER_MMAP_BASE  0x0000028000000000ULL
+#define USER_SHM_BASE   0x0000030000000000ULL
 #define USER_STACK_SIZE (256u * 1024u)
 #define USER_VA_LIMIT   0x0000040000000000ULL
 

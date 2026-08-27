@@ -32,6 +32,7 @@
 #include "cpu.h"
 #include "elf.h"
 #include "exceptions.h"
+#include "ipc.h"
 #include "irq.h"
 #include "lib.h"
 #include "mm/kheap.h"
@@ -472,8 +473,15 @@ static void fork_child_body(void *raw)
 
 /*
  * Mark p zombie, wake reapers. Safe to call for SELF (caller then
- * parks via proc_die) or bookkeeping-only paths. Never frees the
- * task slot here: the exiting task may still be winding down.
+ * parks via proc_die) or bookkeeping-only paths.
+ *
+ * Note the deliberate sequencing contract reap_one() relies on
+ * (phase 5 design, kept): ->alive drops here while the task slot is
+ * only MARKED dead -- its context is guaranteed fully parked by the
+ * time reclaim happens because task_exit() re-marks DEAD after the
+ * final sched_park() handshake. Kernel threads have proc == NULL,
+ * so reaping never depends on the REAPER having a task context --
+ * only the dying process must own one.
  */
 static void mark_zombie(struct proc *p, int code, const char *why)
 {
@@ -515,6 +523,14 @@ static bool reap_one(struct proc *zombie, int *code_out, int *pid_out)
 {
     struct task *t = zombie->task;
     daif_state s;
+
+    /*
+     * Phase 8 IPC teardown FIRST: shared-memory mappings must be
+     * removed through the process's root table while it still
+     * exists, and queue handles dropped so unreferenced queues can
+     * free themselves. Never called for kernel threads (no proc).
+     */
+    ipc_proc_exit(zombie);
 
     registry_del(zombie);
     space_destroy(zombie);
@@ -620,8 +636,15 @@ int proc_do_waitpid(int want, int *code_out)
     struct proc *p = proc_current();
     int pid, code;
 
+    /*
+     * Phase 8: a KERNEL thread has no proc context and therefore no
+     * children (spawn now parents every child to its creator), so
+     * there is nothing to wait for -- fail gracefully with -ESRCH
+     * instead of panicking. Process-context waiters keep the old
+     * "outside a process" panic, which remains a genuine bug trap.
+     */
     if (!p)
-        panic("waitpid outside a process");
+        return -ESRCH;
 
     for (;;) {
         switch (proc_poll_reap(want, &code, &pid)) {
@@ -650,6 +673,7 @@ int proc_spawn(const char *img_name,
 {
     const struct builtin_image *bi = find_builtin(img_name);
     struct proc *p;
+    struct proc *parent = proc_current();   /* may be NULL (boot) */
     struct trap_frame tf;
     vaddr_t brk;
     int slot, pid;
@@ -687,6 +711,8 @@ int proc_spawn(const char *img_name,
     pid = pid_alloc();
     p->pid = pid;
     p->alive = true;
+    p->parent = parent;     /* phase 8: children are reapable by their
+                             * actual spawner (NULL only pre-scheduler) */
     p->sigframe_va = 0;
     p->in_signal = false;
     p->sig_pending = 0;

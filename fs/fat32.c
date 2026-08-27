@@ -30,7 +30,8 @@
 #include "fat32.h"
 #include "lib.h"
 #include "mm/kheap.h"
-#include "spinlock.h"
+#include "panic.h"
+#include "sync.h"
 #include "syscall.h"
 #include "task.h"
 #include "vfs.h"
@@ -77,12 +78,23 @@ static inline void wr32(uint8_t *b, unsigned off, uint32_t v)
 
 /* ---- core types ------------------------------------------------------------------ */
 
-/* sleeping mutex: safe to hold across blocking block-layer calls  */
-struct fat_sem {
-    spinlock_t lk;                      /* guards ->held             */
-    volatile bool held;
-    struct waitqueue wq;
-};
+/*
+ * The sleeping big-fs-lock (phase 8): what used to be a hand-rolled
+ * flag+waitqueue duplicate lives in kernel/sync.c now as a real
+ * blocking mutex with owner tracking, so holding it across blocking
+ * block-layer IO stays safe and is debuggable. Call sites below were
+ * untouched -- only the primitive underneath them changed.
+ */
+static void sem_acquire(struct kmutex *sem)
+{
+    if (kmutex_lock(sem))
+        panic("fat32: filesystem lock would deadlock");
+}
+
+static void sem_release(struct kmutex *sem)
+{
+    kmutex_unlock(sem);
+}
 
 struct fat_fs {
     struct block_device *bd;
@@ -97,7 +109,7 @@ struct fat_fs {
     uint32_t data_start;                /* rel. sector of cluster 2  */
     uint32_t total_clusters;
 
-    struct fat_sem sem;
+    struct kmutex sem;
 };
 
 struct fat_inode {
@@ -117,43 +129,6 @@ struct fat_cursor {
     uint32_t clus;
     uint32_t idx;
 };
-
-static bool bfl_busy(void *ctx)
-{
-    return ((struct fat_sem *)ctx)->held;
-}
-
-static void sem_acquire(struct fat_sem *sem)
-{
-    daif_state s;
-
-    for (;;) {
-        spin_lock_irqsave(&sem->lk, &s);
-        if (!sem->held) {
-            sem->held = true;
-            spin_unlock_irqrestore(&sem->lk, s);
-            return;
-        }
-        spin_unlock_irqrestore(&sem->lk, s);
-
-        /*
-         * Sleeps while ->held; the predicate is re-evaluated fresh
-         * under the scheduler lock, and the outer loop re-checks,
-         * so releases are never lost beyond one spurious round.
-         */
-        wait_sleep_when(bfl_busy, sem, &sem->wq);
-    }
-}
-
-static void sem_release(struct fat_sem *sem)
-{
-    daif_state s;
-
-    spin_lock_irqsave(&sem->lk, &s);
-    sem->held = false;
-    spin_unlock_irqrestore(&sem->lk, s);
-    wait_wake_all(&sem->wq);
-}
 
 static inline uint32_t clus_bytes(const struct fat_fs *fs)
 {
@@ -1390,8 +1365,7 @@ static int fat_mount(struct mount *m)
     fs->root_clus = rd16(bs, 44);
     fs->data_start = data_start;
     fs->total_clusters = clusters;
-    fs->sem.lk = (spinlock_t)SPINLOCK_INIT;
-    fs->sem.wq = (struct waitqueue){ NULL };
+    kmutex_init(&fs->sem, "fat32");
 
     root_in = kzalloc(sizeof(*root_in));
     if (!root_in) {

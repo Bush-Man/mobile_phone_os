@@ -27,7 +27,8 @@
 #include "ext2.h"
 #include "lib.h"
 #include "mm/kheap.h"
-#include "spinlock.h"
+#include "panic.h"
+#include "sync.h"
 #include "syscall.h"
 #include "task.h"
 #include "vfs.h"
@@ -57,43 +58,21 @@
 
 const struct vnode_ops ext2_vops;
 
-/* ---- sleeping big-fs-lock -------------------------------------------------------- */
-
-struct e2_sem {
-    spinlock_t lk;
-    volatile bool held;
-    struct waitqueue wq;
-};
-
-static bool e2_busy(void *ctx)
+/*
+ * The sleeping big-fs-lock (phase 8): the hand-rolled flag+waitqueue
+ * duplicate from phase 7 is gone -- kernel/sync.c now provides a real
+ * blocking mutex with owner tracking. Call sites were untouched; only
+ * the primitive underneath them changed (see fs/fat32.c, same shape).
+ */
+static void sem_acquire(struct kmutex *sem)
 {
-    return ((struct e2_sem *)ctx)->held;
+    if (kmutex_lock(sem))
+        panic("ext2: filesystem lock would deadlock");
 }
 
-static void sem_acquire(struct e2_sem *sem)
+static void sem_release(struct kmutex *sem)
 {
-    daif_state s;
-
-    for (;;) {
-        spin_lock_irqsave(&sem->lk, &s);
-        if (!sem->held) {
-            sem->held = true;
-            spin_unlock_irqrestore(&sem->lk, s);
-            return;
-        }
-        spin_unlock_irqrestore(&sem->lk, s);
-        wait_sleep_when(e2_busy, sem, &sem->wq);
-    }
-}
-
-static void sem_release(struct e2_sem *sem)
-{
-    daif_state s;
-
-    spin_lock_irqsave(&sem->lk, &s);
-    sem->held = false;
-    spin_unlock_irqrestore(&sem->lk, s);
-    wait_wake_all(&sem->wq);
+    kmutex_unlock(sem);
 }
 
 /* ---- core types ---------------------------------------------------------------------- */
@@ -113,7 +92,7 @@ struct e2_fs {
     uint32_t ngroups;
     struct e2_grp grp[E2_NGROUP_MAX];
 
-    struct e2_sem sem;
+    struct kmutex sem;
 };
 
 struct e2_inode {
@@ -1380,8 +1359,7 @@ static int ext2_mount(struct mount *m)
     fs->part_nsect = m->part_nsect;
     fs->blocks_count = blocks;
     fs->ngroups = ngroups;
-    fs->sem.lk = (spinlock_t)SPINLOCK_INIT;
-    fs->sem.wq = (struct waitqueue){ NULL };
+    kmutex_init(&fs->sem, "ext2");
 
     /* trust the group descriptors like a real driver would         */
     for (uint32_t g = 0; g < ngroups; g++) {

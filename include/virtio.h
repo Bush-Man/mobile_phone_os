@@ -146,6 +146,7 @@ paddr_t virtio_stage_pa(const void *stage_va);
 int virtio_blk_attach(struct virtio_dev *d);    /* drivers/virtio_blk.c */
 int virtio_net_attach(struct virtio_dev *d);    /* drivers/virtio_net.c */
 int virtio_gpu_attach(struct virtio_dev *d);    /* drivers/virtio_gpu.c (phase 9) */
+int virtio_input_attach(struct virtio_dev *d);  /* drivers/virtio_input.c (phase 9) */
 
 /* ---- virtio-net API (phase 6 report path; stack lands in phase 11) ------------------- */
 

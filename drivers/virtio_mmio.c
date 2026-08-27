@@ -326,6 +326,9 @@ static int vm_probe(struct device *dev)
     case VDEV_ID_GPU:
         r = virtio_gpu_attach(d);
         break;
+    case VDEV_ID_INPUT:
+        r = virtio_input_attach(d);
+        break;
     default:
         kprintf("virtio: %s: devid %u has no frontend\n",
                 dev->name, devid);

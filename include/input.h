@@ -35,6 +35,8 @@ struct char_dev;
 #define KEY_VOLUMEUP   115u
 #define KEY_POWER      116u
 
+#define SYN_REPORT     0x00u
+
 /* repeat tuning (ms)                                              */
 #define KEY_REPEAT_DELAY_MS 400u
 #define KEY_REPEAT_RATE_MS   60u

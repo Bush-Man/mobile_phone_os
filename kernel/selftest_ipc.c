@@ -268,12 +268,14 @@ static struct {
     struct file *listener;
     volatile bool   up;             /* listener published           */
     volatile bool   replied;
+    volatile bool   done;           /* consumer finished reading    */
     char            reply[8];
 } sv;
 
 static void echo_helper(void *arg)
 {
     struct file *acc = NULL;
+    unsigned spins = 0;
 
     (void)arg;
     if (usock_accept(sv.listener, &acc))
@@ -288,8 +290,12 @@ static void echo_helper(void *arg)
     file_close(acc);
 
 out:
-    for (;;)
-        msleep(1000);               /* stay parked; reap via pool   */
+    /*
+     * Phase 9 debt payoff: linger only briefly for the consumer,
+     * then release the MAX_TASKS slot instead of parking forever.
+     */
+    while (!sv.done && spins++ < 4000)
+        msleep(2);
 }
 
 static void sock_tests(void)
@@ -317,6 +323,7 @@ static void sock_tests(void)
         return;
     sv.listener = ls;
     sv.replied = false;
+    sv.done   = false;
     CHECK(task_create("echoer", echo_helper, NULL, 50) >= 0,
           "echo server spawned");
     sv.up = true;
@@ -329,6 +336,8 @@ static void sock_tests(void)
         task_yield();
     CHECK(memcmp(sv.reply, "PONG1", 5) == 0,
           "usock round-trip PONG1");
+
+    sv.done = true;                     /* let the helper retire      */
 
     file_close(conn);
     file_close(ls);
@@ -361,5 +370,13 @@ void ipc_selftest_task(void *arg)
 
     task_exit();
 }
+
+/*
+ * Phase 9 note: the socket echo server must NOT linger forever --
+ * every parked task burns one of MAX_TASKS slots. sv.done is set by
+ * whoever consumed the reply; the helper watches it briefly and
+ * exits so its slot returns to the pool.
+ */
+
 
 

@@ -38,6 +38,7 @@ struct i2c_adapter {
 int  i2c_adapter_register(struct i2c_adapter *ad);
 struct i2c_adapter *i2c_adapter_find(const char *name);
 unsigned i2c_adapter_count(void);
+struct i2c_adapter *i2c_adapter_at(unsigned idx);   /* registry order */
 
 /* convenience wrappers around xfer() */
 int i2c_transfer(struct i2c_adapter *ad, struct i2c_msg *msgs,

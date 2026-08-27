@@ -64,6 +64,11 @@ unsigned i2c_adapter_count(void)
     return nadapters;
 }
 
+struct i2c_adapter *i2c_adapter_at(unsigned idx)
+{
+    return idx < I2C_ADAPT_MAX ? adapters[idx] : NULL;
+}
+
 int i2c_transfer(struct i2c_adapter *ad, struct i2c_msg *msgs,
                  unsigned nmsgs)
 {

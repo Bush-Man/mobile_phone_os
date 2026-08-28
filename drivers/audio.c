@@ -239,12 +239,13 @@ static void pcm_ul_generate(unsigned n)
     }
 }
 
-static void audio_on_route(enum call_state state)
+static void audio_on_route(enum call_state state, void *arg)
 {
     /*
-     * states mirror enum call_state from modem.h (kept as int to
-     * avoid a modem.h include cycle -- callctl includes this).
+     * `state` is the post-transition call state delivered by the
+     * phase-12 callctl seam.
      */
+    (void)arg;
     if (state == CALL_ACTIVE) {
         pcm.call_pcm_active = true;
         pcm_ul_generate(128);

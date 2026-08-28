@@ -92,7 +92,7 @@ run: all
 
 test: all
 	@python3 tests/serial_harness.py "$(QEMU)" "$(QEMU_ARGS)" \
-	    $(KERNEL) $(BUILD)/serial.log 11
+	    $(KERNEL) $(BUILD)/serial.log 12
 
 # ---- phase 9: graphics + input demo targets -------------------------------
 # virtio-gpu renders into an off-screen host surface by default;

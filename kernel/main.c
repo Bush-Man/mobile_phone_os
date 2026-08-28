@@ -10,6 +10,7 @@
 #include "input.h"
 #include "irq.h"
 #include "battery.h"
+#include "modem.h"
 #include "net.h"
 #include "virtio.h"
 #include "pm.h"
@@ -40,6 +41,7 @@ void phase8_init(const struct platform_info *plat);
 void phase9_init(const struct platform_info *plat);
 void phase10_init(const struct platform_info *plat);
 void phase11_init(const struct platform_info *plat);
+void phase12_init(const struct platform_info *plat);
 
 static void housekeeping_task(void *arg)
 {
@@ -70,6 +72,11 @@ static void housekeeping_task(void *arg)
         net_timers_tick(ms);
         virtio_net_poll();
 
+        /*
+         * phase 12: AT engine drain + timeout/retry enforcement.
+         */
+        modem_tick(ms);
+
         /* one uptime line per second */
         if ((long)(jiffies_read() - mark) >= TIME_HZ) {
             mark += TIME_HZ;
@@ -84,7 +91,7 @@ static void housekeeping_task(void *arg)
 
 extern const struct platform_info *smp_plat;
 
-#define BANNER "[OK] mobile_phone_os phase 11"
+#define BANNER "[OK] mobile_phone_os phase 12"
 
 /*
  * Phase 5 milestone demo: spawn the built-in static "hello" ELF at
@@ -268,6 +275,16 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
      * socket syscalls (see docs/PHASE_11.md).
      */
     phase11_init(&plat);
+
+    /*
+     * Phase 12: telephony. modem_subsys_init selects the transport
+     * (scripted mock on QEMU, real "modem" chardev on boards) and
+     * modtest drives the milestone: status queries, outbound +
+     * inbound calls through the state machine, SMS send/receive
+     * with PDU round-trip into the /sms store, and the rmnet0 data
+     * netif (see docs/PHASE_12.md).
+     */
+    phase12_init(&plat);
 
     kprintf("%s\n", BANNER);
 

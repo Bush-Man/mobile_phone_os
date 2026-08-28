@@ -10,6 +10,7 @@
 #include "input.h"
 #include "irq.h"
 #include "battery.h"
+#include "audio.h"
 #include "modem.h"
 #include "net.h"
 #include "virtio.h"

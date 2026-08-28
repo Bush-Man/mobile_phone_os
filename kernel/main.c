@@ -42,6 +42,7 @@ void phase9_init(const struct platform_info *plat);
 void phase10_init(const struct platform_info *plat);
 void phase11_init(const struct platform_info *plat);
 void phase12_init(const struct platform_info *plat);
+void phase13_init(const struct platform_info *plat);
 
 static void housekeeping_task(void *arg)
 {
@@ -77,6 +78,11 @@ static void housekeeping_task(void *arg)
          */
         modem_tick(ms);
 
+        /*
+         * phase 13: ringer synthesis + backend drain accounting.
+         */
+        audio_tick(ms);
+
         /* one uptime line per second */
         if ((long)(jiffies_read() - mark) >= TIME_HZ) {
             mark += TIME_HZ;
@@ -91,7 +97,7 @@ static void housekeeping_task(void *arg)
 
 extern const struct platform_info *smp_plat;
 
-#define BANNER "[OK] mobile_phone_os phase 12"
+#define BANNER "[OK] mobile_phone_os phase 13"
 
 /*
  * Phase 5 milestone demo: spawn the built-in static "hello" ELF at
@@ -285,6 +291,16 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
      * netif (see docs/PHASE_12.md).
      */
     phase12_init(&plat);
+
+    /*
+     * Phase 13: audio. Registers the null backend (QEMU fallback)
+     * and the I2S scaffold, arms the phase-12 call-routing seam
+     * (ACTIVE -> modem PCM hooks, INCOMING -> ringtone), then
+     * modtest-style "audiotest" verifies mixer math, WAV parse+
+     * play via the VFS, capture, call PCM both directions and the
+     * ringer (see docs/PHASE_13.md).
+     */
+    phase13_init(&plat);
 
     kprintf("%s\n", BANNER);
 

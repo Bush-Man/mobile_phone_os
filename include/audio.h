@@ -62,7 +62,7 @@ struct audio_backend {
     struct audio_backend *next;
 };
 
-int  audio_backend_register(const struct audio_backend *b);
+int  audio_backend_register(struct audio_backend *b);
 unsigned audio_backend_count(void);
 
 /* ---- HAL -------------------------------------------------------------------------- */

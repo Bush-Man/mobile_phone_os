@@ -55,6 +55,8 @@ extern const uint8_t builtin_ipcdemo_start[];
 extern const uint8_t builtin_ipcdemo_end[];
 extern const uint8_t builtin_evreader_start[];
 extern const uint8_t builtin_evreader_end[];
+extern const uint8_t builtin_netcli_start[];
+extern const uint8_t builtin_netcli_end[];
 
 struct builtin_image {
     const char  *name;
@@ -66,6 +68,7 @@ static const struct builtin_image builtins[] = {
     { "hello", builtin_hello_start, builtin_hello_end },
     { "ipcdemo", builtin_ipcdemo_start, builtin_ipcdemo_end },
     { "evreader", builtin_evreader_start, builtin_evreader_end },
+    { "netcli", builtin_netcli_start, builtin_netcli_end },
 };
 
 #define PROC_PRIO 10

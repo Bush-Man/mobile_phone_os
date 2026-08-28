@@ -13,6 +13,8 @@
 #include "spinlock.h"
 
 extern spinlock_t net_lock;
+extern spinlock_t task_state_lock;
+uint64_t task_next_key(void);
 extern uint16_t ip4_pseudo_checksum(uint32_t, uint32_t, uint8_t,
                                     const void *, unsigned);
 extern int ip4_output(struct netif *nif, uint32_t src, uint32_t dst,
@@ -242,7 +244,7 @@ int udp_recv(struct udp_pcb *pcb, void *buf, unsigned buflen,
         if (n > buflen)
             n = buflen;
         memcpy(buf, pcb->ring, n);
-        pcb->head = (pcb->head + 1u) % 8u;
+        pcb->ring_head = (pcb->ring_head + 1u) % 8u;
         pcb->ring_count--;
     }
     spin_unlock_irqrestore(&net_lock, s);

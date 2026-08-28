@@ -76,8 +76,12 @@ userspace/evreader: userspace/evreader.c userspace/evreader.ld
 	$(CC) $(USER_CFLAGS) -no-pie -T userspace/evreader.ld \
 	    -Wl,--build-id=none -o $@ $<
 
+userspace/netcli: userspace/netcli.c userspace/netcli.ld
+	$(CC) $(USER_CFLAGS) -no-pie -T userspace/netcli.ld \
+	    -Wl,--build-id=none -o $@ $<
+
 $(BUILD)/arch/aarch64/builtin_imgs.o: userspace/hello userspace/ipcdemo \
-                                       userspace/evreader
+                                       userspace/evreader userspace/netcli
 
 dtb:
 	$(QEMU) -M virt -cpu cortex-a53 -m 128M -display none \
@@ -88,7 +92,7 @@ run: all
 
 test: all
 	@python3 tests/serial_harness.py "$(QEMU)" "$(QEMU_ARGS)" \
-	    $(KERNEL) $(BUILD)/serial.log 10
+	    $(KERNEL) $(BUILD)/serial.log 11
 
 # ---- phase 9: graphics + input demo targets -------------------------------
 # virtio-gpu renders into an off-screen host surface by default;
@@ -102,6 +106,8 @@ INPUTDEVS   := -device virtio-gpu-device \
 run-display: all disk.img
 	$(QEMU) $(QEMU_ARGS) $(INPUTDEVS) -kernel $(KERNEL) \
 	    $(DISPLAYARGS) -serial stdio \
+	    -netdev user,id=p11n0 \
+	    -device virtio-net-device,netdev=p11n0 \
 	    -drive if=none,file=disk.img,format=raw,id=p6hd \
 	    -device virtio-blk-device,drive=p6hd
 

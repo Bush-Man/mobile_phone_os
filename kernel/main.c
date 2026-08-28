@@ -10,6 +10,8 @@
 #include "input.h"
 #include "irq.h"
 #include "battery.h"
+#include "net.h"
+#include "virtio.h"
 #include "pm.h"
 #include "psci.h"
 #include "lib.h"
@@ -37,6 +39,7 @@ void phase7_init(const struct platform_info *plat);
 void phase8_init(const struct platform_info *plat);
 void phase9_init(const struct platform_info *plat);
 void phase10_init(const struct platform_info *plat);
+void phase11_init(const struct platform_info *plat);
 
 static void housekeeping_task(void *arg)
 {
@@ -59,6 +62,14 @@ static void housekeeping_task(void *arg)
         pm_display_tick(ms);
         battery_poll_tick(ms);
 
+        /*
+         * phase 11: stack timers (TCP retransmit/backoff, ARP retry,
+         * DHCP re-arm) plus virtio-net RX re-arm -- the receive
+         * slots only return to the ring when poll() runs.
+         */
+        net_timers_tick(ms);
+        virtio_net_poll();
+
         /* one uptime line per second */
         if ((long)(jiffies_read() - mark) >= TIME_HZ) {
             mark += TIME_HZ;
@@ -73,7 +84,7 @@ static void housekeeping_task(void *arg)
 
 extern const struct platform_info *smp_plat;
 
-#define BANNER "[OK] mobile_phone_os phase 10"
+#define BANNER "[OK] mobile_phone_os phase 11"
 
 /*
  * Phase 5 milestone demo: spawn the built-in static "hello" ELF at
@@ -248,6 +259,15 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
      * blank/wake cycle and the PSCI conduit -- see docs/PHASE_10.md.
      */
     phase10_init(&plat);
+
+    /*
+     * Phase 11: networking. Registers loopback + virtio-net netifs,
+     * arms the rx bridge, and spawns "nettest": DHCP via SLIRP,
+     * loopback ping, full TCP loopback echo through the stack, then
+     * the netcli process repeating the session through the EL0
+     * socket syscalls (see docs/PHASE_11.md).
+     */
+    phase11_init(&plat);
 
     kprintf("%s\n", BANNER);
 

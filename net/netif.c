@@ -126,6 +126,11 @@ static struct netif lo_netif = {
     .link_out    = lo_out,
 };
 
+int lo_netif_register(void)
+{
+    return netif_register(&lo_netif);
+}
+
 /* ---- input dispatch -------------------------------------------------------------------- */
 
 static void eth_input(const uint8_t *frame, unsigned len,

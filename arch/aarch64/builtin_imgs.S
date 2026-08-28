@@ -32,3 +32,10 @@ builtin_evreader_start:
     .incbin "userspace/evreader"
 .global builtin_evreader_end
 builtin_evreader_end:
+
+.align 3
+.global builtin_netcli_start
+builtin_netcli_start:
+    .incbin "userspace/netcli"
+.global builtin_netcli_end
+builtin_netcli_end:

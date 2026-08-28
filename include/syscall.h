@@ -46,6 +46,15 @@ struct trap_frame;
 #define SYS_socketpair 31
 #define SYS_usock_serve 32
 #define SYS_usock_connect 33
+/* phase 11: AF_INET sockets + select */
+#define SYS_socket 34
+#define SYS_connect 35
+#define SYS_bind 36
+#define SYS_listen 37
+#define SYS_accept 38
+#define SYS_send 39
+#define SYS_recv 40
+#define SYS_select 41
 
 /* minimal errno subset (values match Linux/aarch64) */
 #define EPERM   1

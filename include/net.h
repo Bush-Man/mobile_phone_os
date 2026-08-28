@@ -265,14 +265,16 @@ int  dns_resolve(const char *name, uint32_t *ip_out,
 
 /* ---- sockets (net/sockets.c; wired into syscalls.c) ------------------------------- */
 
-long sys_socket(uint64_t domain, uint64_t type, uint64_t protocol);
-long sys_connect(uint64_t fd, uint64_t addr_p, uint64_t len);
-long sys_bind(uint64_t fd, uint64_t addr_p, uint64_t len);
-long sys_listen(uint64_t fd, uint64_t backlog);
-long sys_accept(uint64_t fd, uint64_t addr_p, uint64_t len_p);
-long sys_send(uint64_t fd, uint64_t buf, uint64_t len, uint64_t flags);
-long sys_recv(uint64_t fd, uint64_t buf, uint64_t len, uint64_t flags);
-long sys_select(uint64_t nfds, uint64_t rd, uint64_t wr, uint64_t ex,
-                uint64_t timeout_ms);
+long net_sys_socket(uint64_t type);
+long net_sys_connect(uint64_t fd, uint64_t addr_p, uint64_t len);
+long net_sys_bind(uint64_t fd, uint64_t addr_p, uint64_t len);
+long net_sys_listen(uint64_t fd, uint64_t backlog);
+long net_sys_accept(uint64_t fd, uint64_t addr_p, uint64_t len_p);
+long net_sys_send(uint64_t fd, uint64_t buf, uint64_t len,
+                  uint64_t flags);
+long net_sys_recv(uint64_t fd, uint64_t buf, uint64_t len,
+                  uint64_t flags);
+long net_sys_select(uint64_t nfds, uint64_t rd, uint64_t wr, uint64_t ex,
+                    uint64_t timeout_ms);
 
 #endif /* NET_H */

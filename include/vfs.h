@@ -251,5 +251,8 @@ void vfs_proc_fds_release(struct proc *p);
 int  vfs_fd_install(struct fd_table *t, struct file *f);
 struct file *vfs_fd_get(struct fd_table *t, int fd);    /* refs++   */
 void vfs_fd_put(struct fd_table *t, int fd);            /* unassign */
+struct proc *vfs_current_proc(void);        /* NULL outside EL0      */
+struct vnode *vfs_vnode_of_fd(int fd);      /* borrowed vn or NULL   */
+int  vfs_install_vnode(struct vnode *vn);   /* fd for anon vnode     */
 
 #endif /* VFS_H */

@@ -36,6 +36,7 @@
 #include "mm/pmm.h"
 #include "mm/types.h"
 #include "mm/vmm.h"
+#include "net.h"
 #include "panic.h"
 #include "proc.h"
 #include "signal.h"
@@ -849,6 +850,126 @@ static long sys_usock_connect(uint64_t upath)
     return fd;
 }
 
+/* ---- phase 11: AF_INET sockets + select ----------------------------------- */
+
+static long sys_socket(uint64_t type)
+{
+    return net_sys_socket(type);
+}
+
+static long sys_connect(uint64_t fd, uint64_t addr_p, uint64_t len)
+{
+    if (!proc_current())
+        return -EINVAL;
+    return net_sys_connect(fd, addr_p, len);
+}
+
+static long sys_bind(uint64_t fd, uint64_t addr_p, uint64_t len)
+{
+    if (!proc_current())
+        return -EINVAL;
+    return net_sys_bind(fd, addr_p, len);
+}
+
+static long sys_listen(uint64_t fd, uint64_t backlog)
+{
+    return net_sys_listen(fd, backlog);
+}
+
+static long sys_accept(uint64_t fd, uint64_t addr_p, uint64_t len_p)
+{
+    return net_sys_accept(fd, addr_p, len_p);
+}
+
+static long sys_send(uint64_t fd, uint64_t ubuf, uint64_t len,
+                     uint64_t flags)
+{
+    if (!proc_current())
+        return -EINVAL;
+    return net_sys_send(fd, ubuf, len, flags);
+}
+
+static long sys_recv(uint64_t fd, uint64_t ubuf, uint64_t len,
+                     uint64_t flags)
+{
+    if (!proc_current())
+        return -EINVAL;
+    return net_sys_recv(fd, ubuf, len, flags);
+}
+
+/*
+ * select(nfds, rd_set, wr_set, ex_set, timeout_ms): fd sets are
+ * single u64 bitmasks (fds 0..63, far beyond PROC_FD_MAX). Returns
+ * the number of ready descriptors; sets are rewritten in place.
+ */
+static long sys_select(uint64_t nfds, uint64_t rd, uint64_t wr,
+                       uint64_t ex, uint64_t timeout_ms)
+{
+    struct proc *p = proc_current();
+    uint64_t rmask = 0, wmask = 0, emask = 0;
+    long ready;
+    bool inf = (timeout_ms == (uint64_t)-1);
+
+    if (!p || nfds == 0 || nfds > 64u)
+        return -EINVAL;
+
+    if (rd && uacc_copy_in_cur(&rmask, (const void *)(uintptr_t)rd, 8))
+        return -EFAULT;
+    if (wr && uacc_copy_in_cur(&wmask, (const void *)(uintptr_t)wr, 8))
+        return -EFAULT;
+    if (ex && uacc_copy_in_cur(&emask, (const void *)(uintptr_t)ex, 8))
+        return -EFAULT;
+
+    for (;;) {
+        ready = 0;
+        for (uint64_t b = 0; b < nfds && b < PROC_FD_MAX; b++) {
+            struct file *f;
+            unsigned m;
+            uint64_t bit = 1ull << b;
+            bool r_ok = false, w_ok = false, e_ok = false;
+
+            if (!(rmask & bit) && !(wmask & bit) && !(emask & bit))
+                continue;
+            if (!p->fds || !(f = vfs_fd_get(p->fds, (int)b))) {
+                e_ok = true;
+            } else {
+                m = ipc_file_ready(f);
+                file_close(f);
+                if (rmask & bit)
+                    r_ok = (m & (POLLIN | POLLHUP | POLLERR)) != 0;
+                if (wmask & bit)
+                    w_ok = (m & (POLLOUT | POLLHUP | POLLERR)) != 0;
+                if (emask & bit)
+                    e_ok = (m & (POLLERR | POLLHUP)) != 0;
+            }
+
+            if (r_ok || w_ok || e_ok) {
+                ready++;
+                rmask = r_ok ? (rmask | bit) : (rmask & ~bit);
+                wmask = w_ok ? (wmask | bit) : (wmask & ~bit);
+                emask = e_ok ? (emask | bit) : (emask & ~bit);
+            } else {
+                if (rmask & bit) rmask &= ~bit;
+                if (wmask & bit) wmask &= ~bit;
+                if (emask & bit) emask &= ~bit;
+            }
+        }
+
+        if (ready || !timeout_ms)
+            break;
+
+        ipc_poll_park(inf ? -1 : (int64_t)timeout_ms);
+    }
+
+    if (rd && uacc_copy_out_cur((void *)(uintptr_t)rd, &rmask, 8))
+        return -EFAULT;
+    if (wr && uacc_copy_out_cur((void *)(uintptr_t)wr, &wmask, 8))
+        return -EFAULT;
+    if (ex && uacc_copy_out_cur((void *)(uintptr_t)ex, &emask, 8))
+        return -EFAULT;
+    return ready;
+}
+
 
 
 
@@ -891,6 +1012,15 @@ static const sys_fn_t sys_table[] = {
     [SYS_socketpair] = (sys_fn_t)sys_socketpair,
     [SYS_usock_serve]   = (sys_fn_t)sys_usock_serve,
     [SYS_usock_connect] = (sys_fn_t)sys_usock_connect,
+    /* phase 11: AF_INET sockets + select */
+    [SYS_socket]     = (sys_fn_t)sys_socket,
+    [SYS_connect]    = (sys_fn_t)sys_connect,
+    [SYS_bind]       = (sys_fn_t)sys_bind,
+    [SYS_listen]     = (sys_fn_t)sys_listen,
+    [SYS_accept]     = (sys_fn_t)sys_accept,
+    [SYS_send]       = (sys_fn_t)sys_send,
+    [SYS_recv]       = (sys_fn_t)sys_recv,
+    [SYS_select]     = (sys_fn_t)sys_select,
 };
 
 void syscall_dispatch(struct trap_frame *tf)

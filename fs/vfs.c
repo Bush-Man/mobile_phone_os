@@ -792,6 +792,48 @@ struct file *vfs_fd_get(struct fd_table *t, int fd)
     return f;
 }
 
+struct proc *vfs_current_proc(void)
+{
+    struct task *t = current_task();
+
+    return t ? t->proc : NULL;
+}
+
+struct vnode *vfs_vnode_of_fd(int fd)
+{
+    struct proc *p = vfs_current_proc();
+    struct file *f;
+    struct vnode *vn;
+
+    if (!p || !p->fds || fd < 0 || fd >= PROC_FD_MAX)
+        return NULL;
+    f = vfs_fd_get(p->fds, fd);
+    if (!f)
+        return NULL;
+    vn = f->vn;
+    file_close(f);
+    return vn;
+}
+
+int vfs_install_vnode(struct vnode *vn)
+{
+    struct proc *p = vfs_current_proc();
+    struct file *f;
+    int fd;
+
+    if (!p || !vn)
+        return -1;
+    if (!p->fds && vfs_proc_fds_init(p))
+        return -1;
+    f = file_alloc(vn, O_RDWR);
+    if (!f)
+        return -1;
+    fd = vfs_fd_install(p->fds, f);
+    if (fd < 0)
+        file_close(f);
+    return fd;
+}
+
 void vfs_fd_put(struct fd_table *t, int fd)
 {
     struct file *f = NULL;

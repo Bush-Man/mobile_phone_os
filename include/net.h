@@ -121,6 +121,12 @@ uint16_t ip4_pseudo_checksum(uint32_t src, uint32_t dst,
                              uint8_t proto, const void *hdr_payload,
                              unsigned len);
 
+/* rx entry points into the transport layers (net/udp.c, net/tcp.c) */
+void udp_input(struct netif *nif, uint32_t src, uint32_t dst,
+               const uint8_t *pkt, unsigned len);
+void tcp_input(struct netif *nif, uint32_t src, uint32_t dst,
+               const uint8_t *pkt, unsigned len);
+
 /* ---- icmp ----------------------------------------------------------------------------- */
 
 #define ICMP_ECHO_REPLY   0u

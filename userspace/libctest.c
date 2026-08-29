@@ -96,15 +96,22 @@ static void test_brk(void)
     CHECK(sbrk(0) >= nxt + 32, "sbrk: top advanced");
 }
 
+struct counter_work {
+    pthread_mutex_t *lock;
+    int *counter;
+};
+
 static void *counter_thread(void *arg)
 {
-    int *counter = arg;
+    struct counter_work *w = arg;
 
     for (int i = 0; i < 500; i++) {
-        (*counter)++;
-        sleep_ms(1);
+        pthread_mutex_lock(w->lock);
+        (*w->counter)++;
+        pthread_mutex_unlock(w->lock);
+        sleep_ms(1);            /* yield so both threads progress  */
     }
-    return arg;
+    return w;
 }
 
 static void test_pthread(void)
@@ -112,11 +119,12 @@ static void test_pthread(void)
     static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
     pthread_t t1, t2;
     int counter = 0;
+    struct counter_work w = { &lock, &counter };
     void *r1 = 0, *r2 = 0;
 
-    CHECK(pthread_create(&t1, 0, counter_thread, &counter) == 0,
+    CHECK(pthread_create(&t1, 0, counter_thread, &w) == 0,
           "pthread: create t1");
-    CHECK(pthread_create(&t2, 0, counter_thread, &counter) == 0,
+    CHECK(pthread_create(&t2, 0, counter_thread, &w) == 0,
           "pthread: create t2");
 
     /* mutex: uncontended lock/unlock round trip                    */
@@ -127,7 +135,7 @@ static void test_pthread(void)
     pthread_join(t1, &r1);
     pthread_join(t2, &r2);
     CHECK(counter == 1001, "pthread: joined, counter exact");
-    CHECK(r1 == &counter && r2 == &counter, "pthread: retvals");
+    CHECK(r1 == &w && r2 == &w, "pthread: retvals");
 }
 
 int main(int argc, char **argv)

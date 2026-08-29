@@ -42,18 +42,27 @@ static void sink_puts(struct sink *s, const char *str, size_t len)
     write(s->fd, str, len);
 }
 
-/* emit str, padded to width with 'padc' ('0' flag pads numbers)   */
+/* emit str, padded to width ('0' flag pads numbers on the left,
+ * '-' flag left-justifies with spaces)                             */
 static void pad_emit(struct sink *s, const char *str, size_t len,
-                     int width, char padc)
+                     int width, char padc, int left)
 {
-    while ((int)len < width--) {
-        sink_putc(s, padc);
+    if (left)
+        padc = ' ';
+    if (!left) {
+        while ((int)len < width--)
+            sink_putc(s, padc);
     }
     sink_puts(s, str, len);
+    if (left) {
+        while ((int)len < width--)
+            sink_putc(s, ' ');
+    }
 }
 
 static void emit_u64(struct sink *s, u64 v, unsigned base,
-                     int upper, int width, char padc, int neg)
+                     int upper, int width, char padc, int left,
+                     int neg)
 {
     char tmp[24];
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
@@ -66,11 +75,11 @@ static void emit_u64(struct sink *s, u64 v, unsigned base,
 
     if (neg)
         sink_putc(s, '-');
-    pad_emit(s, tmp, (size_t)n, width, padc);
+    pad_emit(s, tmp, (size_t)n, width, padc, left);
 }
 
 static void emit_i64(struct sink *s, i64 v, unsigned base,
-                     int upper, int width, char padc)
+                     int upper, int width, char padc, int left)
 {
     u64 m;
 
@@ -78,16 +87,16 @@ static void emit_i64(struct sink *s, i64 v, unsigned base,
         m = (u64)(-(v + 1)) + 1u;
         if (width > 0)
             width--;
-        emit_u64(s, m, base, upper, width, padc, 1);
+        emit_u64(s, m, base, upper, width, padc, left, 1);
     } else {
-        emit_u64(s, (u64)v, base, upper, width, padc, 0);
+        emit_u64(s, (u64)v, base, upper, width, padc, left, 0);
     }
 }
 
 static void emit_ptr(struct sink *s, const void *p)
 {
     sink_puts(s, "0x", 2);
-    emit_u64(s, (u64)(uintptr_t)p, 16, 0, 16, '0', 0);
+    emit_u64(s, (u64)(uintptr_t)p, 16, 0, 16, '0', 0, 0);
 }
 
 static void vformat(struct sink *s, const char *fmt, va_list ap)
@@ -100,11 +109,18 @@ static void vformat(struct sink *s, const char *fmt, va_list ap)
         fmt++;
 
         char padc = ' ';
-        int width = 0, lcount = 0;
+        int width = 0, lcount = 0, left = 0;
 
-        if (*fmt == '0') {
-            padc = '0';
-            fmt++;
+        for (;;) {
+            if (*fmt == '0') {
+                padc = '0';
+                fmt++;
+            } else if (*fmt == '-') {
+                left = 1;
+                fmt++;
+            } else {
+                break;
+            }
         }
         while (*fmt >= '0' && *fmt <= '9') {
             width = width * 10 + (*fmt - '0');
@@ -119,14 +135,14 @@ static void vformat(struct sink *s, const char *fmt, va_list ap)
         case 'c': {
             char c = (char)va_arg(ap, int);
 
-            pad_emit(s, &c, 1, width, ' ');
+            pad_emit(s, &c, 1, width, ' ', left);
             break;
         }
         case 's': {
             const char *str = va_arg(ap, const char *);
 
             pad_emit(s, str ? str : "(null)",
-                     strlen(str ? str : "(null)"), width, ' ');
+                     strlen(str ? str : "(null)"), width, ' ', left);
             break;
         }
         case 'd':
@@ -134,14 +150,14 @@ static void vformat(struct sink *s, const char *fmt, va_list ap)
             i64 v = lcount ? va_arg(ap, i64)
                            : (i64)va_arg(ap, int);
 
-            emit_i64(s, v, 10, 0, width, padc);
+            emit_i64(s, v, 10, 0, width, padc, left);
             break;
         }
         case 'u': {
             u64 v = lcount ? va_arg(ap, u64)
                            : (u64)va_arg(ap, unsigned int);
 
-            emit_u64(s, v, 10, 0, width, padc, 0);
+            emit_u64(s, v, 10, 0, width, padc, left, 0);
             break;
         }
         case 'x':
@@ -149,7 +165,7 @@ static void vformat(struct sink *s, const char *fmt, va_list ap)
             u64 v = lcount ? va_arg(ap, u64)
                            : (u64)va_arg(ap, unsigned int);
 
-            emit_u64(s, v, 16, *fmt == 'X', width, padc, 0);
+            emit_u64(s, v, 16, *fmt == 'X', width, padc, left, 0);
             break;
         }
         case 'p':

@@ -140,7 +140,8 @@ userspace/crasher: userspace/crasher.c $(LIBC_OBJS) \
 UI_LIB_OBJS := $(BUILD)/ui_gfx.o $(BUILD)/ui_widgets.o \
                $(BUILD)/ui_client.o
 
-$(BUILD)/ui_%.o: userspace/ui/%.c
+# the stem excludes the ui_ prefix (build/ui_gfx.o <- ui_gfx.c)
+$(BUILD)/ui_%.o: userspace/ui/ui_%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include -Iinclude \
 	    -c $< -o $@
@@ -148,9 +149,16 @@ $(BUILD)/ui_%.o: userspace/ui/%.c
 UI_PROGS := compositor dialer msgs contacts clock calc settings \
             uitest
 
-$(UI_PROGS:%=userspace/%): userspace/%.c $(LIBC_OBJS) \
+# Static pattern rule (targets : target-pattern : prereq-patterns):
+# as an ordinary rule the literal prerequisite "userspace/%.c" has
+# no rule and make stops before building any UI program.
+# -Iuserspace/ui: the apps live in userspace/ and quote-include
+# "ui.h" from userspace/ui/ (the toolkit objects compile from
+# inside that directory, so only the program rule needs the flag).
+$(UI_PROGS:%=userspace/%): userspace/%: userspace/%.c $(LIBC_OBJS) \
                            $(UI_LIB_OBJS) userspace/libc/user.ld
 	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include -Iinclude \
+	    -Iuserspace/ui \
 	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
 	    $(LIBC_OBJS) $(UI_LIB_OBJS)
 

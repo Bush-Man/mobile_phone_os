@@ -45,6 +45,7 @@ void phase11_init(const struct platform_info *plat);
 void phase12_init(const struct platform_info *plat);
 void phase13_init(const struct platform_info *plat);
 void phase14_init(const struct platform_info *plat);
+void phase15_init(const struct platform_info *plat);
 
 static void housekeeping_task(void *arg)
 {
@@ -106,7 +107,7 @@ static void housekeeping_task(void *arg)
 
 extern const struct platform_info *smp_plat;
 
-#define BANNER "[OK] mobile_phone_os phase 14"
+#define BANNER "[OK] mobile_phone_os phase 15"
 
 /*
  * Phase 5 milestone demo: spawn the built-in static "hello" ELF at
@@ -321,6 +322,17 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
      * batteries against it (see docs/PHASE_14.md).
      */
     phase14_init(&plat);
+
+    /*
+     * Phase 15: UI framework & phone apps. The compositor + app
+     * binaries are built-ins init spawns; modemd (the telephony
+     * broker) was started by phase12_init; this arms the "uitest15"
+     * battery, which waits for the compositor and then drives the
+     * milestone end to end: protocol round trip, SMS notification
+     * banner, PIN unlock, launcher -> dialer, incoming call event
+     * (see docs/PHASE_15.md).
+     */
+    phase15_init(&plat);
 
     kprintf("%s\n", BANNER);
 

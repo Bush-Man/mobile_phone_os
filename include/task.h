@@ -21,12 +21,14 @@ enum task_state {
  * Phase 14: the boot path alone creates more slots than the old
  * kernel-only budget of 8 (twelve selftest/housekeeping tasks plus
  * the phase-5..8 demo processes), and the userspace foundation adds
- * init + daemons + shell + their children and threads on top. 32
- * slots cost 512 KiB of static stacks -- noise against 128 MiB --
- * and keep the deadlock detector's visit budget valid (a cycle can
- * never involve more than MAX_TASKS tasks).
+ * init + daemons + shell + their children and threads on top.
+ * Phase 15 doubles it again: the compositor alone runs four
+ * threads plus one reader per client connection, and each app
+ * brings its own -- 64 slots cost 1 MiB of static stacks, noise
+ * against 128 MiB, and keep the deadlock detector's visit budget
+ * valid (a cycle can never involve more than MAX_TASKS tasks).
  */
-#define MAX_TASKS       32
+#define MAX_TASKS       64
 
 struct task {
     struct cpu_context ctx;         /* must stay at offset 0        */

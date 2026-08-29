@@ -60,7 +60,9 @@
 #define PROC_KSTACK     (16u * 1024u)   /* dedicated kernel-mode stack  */
 
 /* phase 8 IPC resource budgets owned per process (see include/ipc.h) */
-#define PROC_SHM_MAX     4u             /* attached shm regions        */
+/* PROC_SHM_MAX is 8 for phase 15: the compositor keeps one shm
+ * mapping per open app window                                       */
+#define PROC_SHM_MAX     8u             /* attached shm regions        */
 #define PROC_MQ_MAX      4u             /* open message-queue handles  */
 
 struct proc {

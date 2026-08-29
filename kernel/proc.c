@@ -74,6 +74,23 @@ extern const uint8_t builtin_libctest_start[];
 extern const uint8_t builtin_libctest_end[];
 extern const uint8_t builtin_crasher_start[];
 extern const uint8_t builtin_crasher_end[];
+/* phase 15: compositor + phone apps */
+extern const uint8_t builtin_compositor_start[];
+extern const uint8_t builtin_compositor_end[];
+extern const uint8_t builtin_dialer_start[];
+extern const uint8_t builtin_dialer_end[];
+extern const uint8_t builtin_msgs_start[];
+extern const uint8_t builtin_msgs_end[];
+extern const uint8_t builtin_contacts_start[];
+extern const uint8_t builtin_contacts_end[];
+extern const uint8_t builtin_clock_start[];
+extern const uint8_t builtin_clock_end[];
+extern const uint8_t builtin_calc_start[];
+extern const uint8_t builtin_calc_end[];
+extern const uint8_t builtin_settings_start[];
+extern const uint8_t builtin_settings_end[];
+extern const uint8_t builtin_uitest_start[];
+extern const uint8_t builtin_uitest_end[];
 
 struct builtin_image {
     const char  *name;
@@ -94,6 +111,16 @@ static const struct builtin_image builtins[] = {
     { "timed", builtin_timed_start, builtin_timed_end },
     { "libctest", builtin_libctest_start, builtin_libctest_end },
     { "crasher", builtin_crasher_start, builtin_crasher_end },
+    /* phase 15: compositor + phone apps                            */
+    { "compositor", builtin_compositor_start,
+      builtin_compositor_end },
+    { "dialer", builtin_dialer_start, builtin_dialer_end },
+    { "msgs", builtin_msgs_start, builtin_msgs_end },
+    { "contacts", builtin_contacts_start, builtin_contacts_end },
+    { "clock", builtin_clock_start, builtin_clock_end },
+    { "calc", builtin_calc_start, builtin_calc_end },
+    { "settings", builtin_settings_start, builtin_settings_end },
+    { "uitest", builtin_uitest_start, builtin_uitest_end },
 };
 
 #define PROC_PRIO 10

@@ -69,6 +69,8 @@ struct trap_frame;
 #define SYS_thread_exit 52
 #define SYS_poweroff 53
 #define SYS_reboot 54
+/* phase 15: userspace unix-socket servers (compositor) */
+#define SYS_usock_accept 55
 
 /* minimal errno subset (values match Linux/aarch64) */
 #define EPERM   1

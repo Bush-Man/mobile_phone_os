@@ -974,6 +974,36 @@ static long sys_usock_connect(uint64_t upath)
     return fd;
 }
 
+/*
+ * Phase 15: accept on a unix listener fd (SYS_usock_serve's).
+ * The compositor is the first EL0 unix-socket server -- the
+ * kernel-resident modemd used the internal usock_accept() directly,
+ * but userspace had no door in. Blocking: parks on the listener's
+ * accept queue until a connector arrives.
+ */
+static long sys_usock_accept(uint64_t fd)
+{
+    struct proc *p = proc_current();
+    struct file *lf, *cf;
+    long rc;
+    int nfd;
+
+    if (!p)
+        return -EINVAL;
+    if (!(lf = vfs_fd_get(p->fds, (int)fd)))
+        return -EBADF;
+
+    rc = usock_accept(lf, &cf);
+    if (rc)
+        return rc;
+    nfd = fd_install_of(p, cf);
+    if (nfd < 0) {
+        file_close(cf);
+        return -EMFILE;
+    }
+    return nfd;
+}
+
 /* ---- phase 11: AF_INET sockets + select ----------------------------------- */
 
 static long sys_socket(uint64_t type)
@@ -1373,6 +1403,7 @@ static const sys_fn_t sys_table[] = {
     [SYS_socketpair] = (sys_fn_t)sys_socketpair,
     [SYS_usock_serve]   = (sys_fn_t)sys_usock_serve,
     [SYS_usock_connect] = (sys_fn_t)sys_usock_connect,
+    [SYS_usock_accept]  = (sys_fn_t)sys_usock_accept,
     /* phase 11: AF_INET sockets + select */
     [SYS_socket]     = (sys_fn_t)sys_socket,
     [SYS_connect]    = (sys_fn_t)sys_connect,

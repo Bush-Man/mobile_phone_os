@@ -17,6 +17,7 @@
 #include "task.h"
 
 void modem_selftest_task(void *arg);    /* kernel/selftest_modem.c   */
+void modemd_task(void *arg);            /* kernel/modemd.c           */
 
 void phase12_init(const struct platform_info *plat)
 {
@@ -33,4 +34,8 @@ void phase12_init(const struct platform_info *plat)
         return;
     }
     task_create("modtest", modem_selftest_task, NULL, 56);
+    /* phase 15: the telephony service broker -- serves the unix-
+     * socket line protocol EL0 programs (dialer, msgs, the
+     * compositor) consume instead of raw modem calls            */
+    task_create("modemd", modemd_task, NULL, 40);
 }

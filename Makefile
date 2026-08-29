@@ -36,7 +36,7 @@ OBJS   := $(addprefix $(BUILD)/,$(SRCS_C:.c=.o) $(SRCS_S:.S=.o))
 OBJS   += $(BUILD)/fdt_blob.o
 DEPS   := $(filter-out $(BUILD)/fdt_blob.o,$(OBJS:.o=.d))
 
-.PHONY: all run test debug dtb clean userspace
+.PHONY: all run test debug dtb clean userspace release
 
 all: $(KERNEL) $(IMG)
 
@@ -171,7 +171,17 @@ run: all
 
 test: all
 	@python3 tests/serial_harness.py "$(QEMU)" "$(QEMU_ARGS)" \
-	    $(KERNEL) $(BUILD)/serial.log 15
+	    $(KERNEL) $(BUILD)/serial.log 16
+
+# ---- phase 16: release image builder (item 89) ------------------------------
+# Assembles the reproducible release bundle: the boot image, the ELF
+# with symbols, the docs set, and a manifest pinning the exact source
+# (git hash) with sha256 sums. Host-side only; see docs/RELEASE.md.
+# Override BOARD=pinephone to select a board config in the script.
+release: all
+	@bash scripts/build-release.sh "$(BUILD)" "$(GIT_HASH)"
+
+GIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 # ---- phase 9: graphics + input demo targets -------------------------------
 # virtio-gpu renders into an off-screen host surface by default;

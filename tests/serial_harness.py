@@ -100,6 +100,12 @@ def main():
                 b"[ui] launch dialer" in b and
                 b"[dialer] ready" in b and
                 b"[ui] banner: SMS" in b)
+        if phase >= 16:
+            ok = ok and (
+                b"selftest: release ok" in b and
+                b"[perf] boot" in b and
+                b"watchdog: armed" in b and
+                b"ab: automatic rollback fired" in b)
         return ok
 
     try:
@@ -155,6 +161,11 @@ def main():
         print(f"  ui launch: {b'[ui] launch dialer' in buf}")
         print(f"  ui banner: {b'[ui] banner: SMS' in buf}")
         print(f"  ui selft : {b'selftest: ui ok' in buf}")
+    if phase >= 16:
+        print(f"  rel perf : {b'[perf] boot' in buf}")
+        print(f"  rel wdt  : {b'watchdog: armed' in buf}")
+        print(f"  rel ab   : {b'ab: automatic rollback fired' in buf}")
+        print(f"  rel selft: {b'selftest: release ok' in buf}")
     with open(logfile, "rb") as f:
         tail = f.read()[-800:].decode(errors="replace")
     print("--- last serial output ---")

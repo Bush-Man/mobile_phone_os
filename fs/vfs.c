@@ -229,11 +229,6 @@ unsigned vfs_mount_count(void)
     return nmounts;
 }
 
-unsigned vfs_mount_count(void)
-{
-    return nmounts;
-}
-
 /*
  * Phase 14: fill up to `max` mountinfo records (usabi.h layout) for
  * the SYS_mountinfo report. Returns the number of entries written.
@@ -265,7 +260,6 @@ unsigned vfs_mountinfo_fill(struct mountinfo_entry *ents, unsigned max)
     return out;
 }
 
-bool vfs_path_is_mounted(const char *path)
 bool vfs_path_is_mounted(const char *path)
 {
     daif_state s;

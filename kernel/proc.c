@@ -1151,6 +1151,9 @@ int proc_do_kill(int pid, unsigned sig)
 
 /* ---- threads (pthread-lite backend, phase 14) ------------------------------ */
 
+/* frame base for a fresh EL1 frame on a THREAD's own kstack */
+static struct trap_frame *kstack_frame_thread(struct task *t);
+
 /*
  * Thread body: runs on the thread's dedicated kstack; first entry
  * into user mode goes through the standard proc_enter_user with the

@@ -95,6 +95,49 @@ int task_create(const char *name, void (*fn)(void *), void *arg,
     return (int)(t - tasks);
 }
 
+/*
+ * Phase 14: creation split into "reserve + prime while blocked" and
+ * an explicit launch, so callers can wire ->proc / ->t_kstack (and
+ * kmalloc thread stacks) before the slot becomes dispatchable. The
+ * deferred slot is TASK_BLOCKED, which pick_next skips and wait
+ * queues never touch for these tasks -- only task_launch wakes it.
+ */
+int task_create_deferred(const char *name, void (*fn)(void *),
+                         void *arg, unsigned prio)
+{
+    daif_state s;
+    struct task *t;
+
+    if (!fn)
+        return -1;
+
+    spin_lock_irqsave(&task_state_lock, &s);
+    t = alloc_task();
+    if (!t) {
+        spin_unlock_irqrestore(&task_state_lock, s);
+        return -1;
+    }
+    task_prime(t, name, fn, arg, prio);
+    t->state = TASK_BLOCKED;
+    t->parked = false;
+    t->t_kstack = NULL;
+    spin_unlock_irqrestore(&task_state_lock, s);
+    return (int)(t - tasks);
+}
+
+void task_launch(int slot)
+{
+    daif_state s;
+
+    if (slot < 0 || slot >= MAX_TASKS)
+        panic("task_launch: bad slot");
+
+    spin_lock_irqsave(&task_state_lock, &s);
+    tasks[slot].state = TASK_READY;
+    tasks[slot].rq_key = task_next_key();
+    spin_unlock_irqrestore(&task_state_lock, s);
+}
+
 /* ---- trampoline + exit ------------------------------------------------------ */
 
 void task_first_entry(void)
@@ -231,6 +274,11 @@ void wait_wake_all(struct waitqueue *wq)
 
         wq->head = t->wq_next;
         t->wq_next = NULL;
+        if (t->state == TASK_DEAD)      /* phase 14: killed while
+                                         * parked -- unlink only, a
+                                         * DEAD context must never
+                                         * re-enter the run queue */
+            continue;
         t->state = TASK_READY;
         t->rq_key = task_next_key();
         if (cur && t->prio < cur->prio)

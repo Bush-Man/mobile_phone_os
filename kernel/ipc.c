@@ -80,6 +80,8 @@ static void ipc_wake(struct waitqueue *wq)
 
         wq->head = t->wq_next;
         t->wq_next = NULL;
+        if (t->state == TASK_DEAD)  /* phase 14: killed while parked */
+            continue;
         t->state = TASK_READY;
         t->rq_key = task_next_key();
     }
@@ -97,6 +99,8 @@ void ipc_wake_pollers(void)
 
         poll_wq.head = t->wq_next;
         t->wq_next = NULL;
+        if (t->state == TASK_DEAD)  /* phase 14: killed while parked */
+            continue;
         t->state = TASK_READY;
         t->rq_key = task_next_key();
     }

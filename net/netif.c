@@ -77,6 +77,20 @@ unsigned netif_count(void)
     return nnetifs;
 }
 
+/*
+ * Phase 14: registry-order accessor for the SYS_netinfo report --
+ * idx runs newest-first, matching netif_register's list push, so
+ * report output is stable and lo (registered first) comes last.
+ */
+struct netif *netif_at(unsigned idx)
+{
+    struct netif *it = netifs;
+
+    while (it && idx--)
+        it = it->next;
+    return it;
+}
+
 struct netif *netif_route(uint32_t dst_ip)
 {
     struct netif *lo = NULL;

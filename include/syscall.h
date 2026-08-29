@@ -55,6 +55,20 @@ struct trap_frame;
 #define SYS_send 39
 #define SYS_recv 40
 #define SYS_select 41
+/* phase 14: userspace foundation */
+#define SYS_brk 42
+#define SYS_psinfo 43
+#define SYS_mountinfo 44
+#define SYS_mount 45
+#define SYS_netinfo 46
+#define SYS_battinfo 47
+#define SYS_gettime 48
+#define SYS_settime 49
+#define SYS_devlist 50
+#define SYS_clone 51
+#define SYS_thread_exit 52
+#define SYS_poweroff 53
+#define SYS_reboot 54
 
 /* minimal errno subset (values match Linux/aarch64) */
 #define EPERM   1

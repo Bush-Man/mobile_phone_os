@@ -135,7 +135,11 @@ static void park_on_queue(struct waitqueue *wq)
 
 /* ---- deadlock detector --------------------------------------------------------- */
 
-#define DEADLK_VISIT_MAX 16         /* > MAX_TASKS*2 cannot cycle past */
+#define DEADLK_VISIT_MAX 64         /* > MAX_TASKS*2 cannot cycle past
+                                       (budget follows MAX_TASKS; a
+                                       chain consumes one owner per
+                                       hop, so 2*MAX_TASKS stays the
+                                       generous bound it always was) */
 
 /*
  * Would blocking on `target` close (or join) a cycle? Walks

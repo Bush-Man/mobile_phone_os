@@ -118,7 +118,12 @@ void sched_run(uint64_t cpu)
         proc_address_space_switch(next->proc);
 
         cpu_switch_to(&pc->sched_ctx, &next->ctx);
-        /* back: that task parked itself again */
+        /*
+         * Back: that task parked itself again (task_exit, blocking,
+         * or preemption). From this instant its context is quiescent
+         * -- phase 14 marks the handshake thread reclaim relies on.
+         */
+        pc->current->parked = true;
     }
 }
 
@@ -168,8 +173,15 @@ void sched_post_irq(void)
     pc->need_resched = false;
 
     spin_lock_irqsave(&task_state_lock, &s);
-    pc->current->state = TASK_READY;
-    pc->current->rq_key = task_next_key();
+    /*
+     * Phase 14: a task can have been marked DEAD cross-cpu while it
+     * was running (process kill sweeping its threads). Re-queue only
+     * what is still alive; a DEAD current just parks for good.
+     */
+    if (pc->current->state == TASK_RUNNING) {
+        pc->current->state = TASK_READY;
+        pc->current->rq_key = task_next_key();
+    }
     spin_unlock_irqrestore(&task_state_lock, s);
 
     sched_park();                   /* through the scheduler context */

@@ -80,8 +80,63 @@ userspace/netcli: userspace/netcli.c userspace/netcli.ld
 	$(CC) $(USER_CFLAGS) -no-pie -T userspace/netcli.ld \
 	    -Wl,--build-id=none -o $@ $<
 
+# ---- phase 14: libc-linked userspace foundation ---------------------------
+# Every program below links the libc objects (crt0.o FIRST, so _start
+# owns the entry point) plus its own main file. One shared linker
+# script: userspace/libc/user.ld.
+
+LIBC_OBJS := $(BUILD)/libc_crt0.o $(BUILD)/libc_string.o \
+             $(BUILD)/libc_stdio.o $(BUILD)/libc_malloc.o \
+             $(BUILD)/libc_unistd.o $(BUILD)/libc_pthread.o
+
+$(BUILD)/libc_%.o: userspace/libc/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include -c $< -o $@
+
+userspace/init: userspace/init.c $(LIBC_OBJS) userspace/libc/user.ld
+	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
+	    $(LIBC_OBJS)
+
+userspace/sh: userspace/sh.c $(LIBC_OBJS) userspace/libc/user.ld
+	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
+	    $(LIBC_OBJS)
+
+userspace/batteryd: userspace/batteryd.c $(LIBC_OBJS) \
+                    userspace/libc/user.ld
+	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
+	    $(LIBC_OBJS)
+
+userspace/udevd: userspace/udevd.c $(LIBC_OBJS) userspace/libc/user.ld
+	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
+	    $(LIBC_OBJS)
+
+userspace/timed: userspace/timed.c $(LIBC_OBJS) userspace/libc/user.ld
+	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
+	    $(LIBC_OBJS)
+
+userspace/libctest: userspace/libctest.c $(LIBC_OBJS) \
+                    userspace/libc/user.ld
+	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
+	    $(LIBC_OBJS)
+
+userspace/crasher: userspace/crasher.c $(LIBC_OBJS) \
+                   userspace/libc/user.ld
+	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
+	    $(LIBC_OBJS)
+
 $(BUILD)/arch/aarch64/builtin_imgs.o: userspace/hello userspace/ipcdemo \
-                                       userspace/evreader userspace/netcli
+                                       userspace/evreader userspace/netcli \
+                                       userspace/init userspace/sh \
+                                       userspace/batteryd userspace/udevd \
+                                       userspace/timed userspace/libctest \
+                                       userspace/crasher
 
 dtb:
 	$(QEMU) -M virt -cpu cortex-a53 -m 128M -display none \
@@ -92,7 +147,7 @@ run: all
 
 test: all
 	@python3 tests/serial_harness.py "$(QEMU)" "$(QEMU_ARGS)" \
-	    $(KERNEL) $(BUILD)/serial.log 13
+	    $(KERNEL) $(BUILD)/serial.log 14
 
 # ---- phase 9: graphics + input demo targets -------------------------------
 # virtio-gpu renders into an off-screen host surface by default;

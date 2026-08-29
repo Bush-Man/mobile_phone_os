@@ -39,3 +39,54 @@ builtin_netcli_start:
     .incbin "userspace/netcli"
 .global builtin_netcli_end
 builtin_netcli_end:
+
+/* phase 14: libc-linked programs (crt0 + userspace/libc)           */
+
+.align 3
+.global builtin_init_start
+builtin_init_start:
+    .incbin "userspace/init"
+.global builtin_init_end
+builtin_init_end:
+
+.align 3
+.global builtin_sh_start
+builtin_sh_start:
+    .incbin "userspace/sh"
+.global builtin_sh_end
+builtin_sh_end:
+
+.align 3
+.global builtin_batteryd_start
+builtin_batteryd_start:
+    .incbin "userspace/batteryd"
+.global builtin_batteryd_end
+builtin_batteryd_end:
+
+.align 3
+.global builtin_udevd_start
+builtin_udevd_start:
+    .incbin "userspace/udevd"
+.global builtin_udevd_end
+builtin_udevd_end:
+
+.align 3
+.global builtin_timed_start
+builtin_timed_start:
+    .incbin "userspace/timed"
+.global builtin_timed_end
+builtin_timed_end:
+
+.align 3
+.global builtin_libctest_start
+builtin_libctest_start:
+    .incbin "userspace/libctest"
+.global builtin_libctest_end
+builtin_libctest_end:
+
+.align 3
+.global builtin_crasher_start
+builtin_crasher_start:
+    .incbin "userspace/crasher"
+.global builtin_crasher_end
+builtin_crasher_end:

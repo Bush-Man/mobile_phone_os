@@ -565,6 +565,19 @@ static void proc_task_body(void *raw)
 
     tf = kstack_frame(p);
     memcpy(tf, &p->entry_tf, sizeof(*tf));
+
+    /* TEMP DEBUG: state right before the first eret to EL0 */
+    {
+        uint64_t tbr;
+
+        __asm__ volatile("mrs %0, ttbr0_el1" : "=r"(tbr));
+        kprintf("[dbg2] pre-eret %s: ttbr0=%llx elr=%llx root=%llx\n",
+                p->name, (unsigned long long)tbr,
+                (unsigned long long)p->entry_tf.elr,
+                (unsigned long long)p->root_pa);
+        vmm_debug_walk(tbr & 0x0000ffffffffffffULL, p->entry_tf.elr);
+    }
+
     proc_enter_user(tf);                /* never returns              */
 }
 
@@ -1399,6 +1412,18 @@ void proc_user_fault(struct trap_frame *tf, uint64_t esr, uint64_t far)
 {
     struct proc *p = proc_current();
     uint64_t ec = (esr >> 26) & 0x3f;
+
+    /* TEMP DEBUG: dump ttbr0/tcr and walk the faulting VA */
+    {
+        extern void vmm_debug_walk(uint64_t ttbr0, uint64_t va);
+
+        uint64_t ttbr0, tcr;
+        __asm__ volatile("mrs %0, ttbr0_el1" : "=r"(ttbr0));
+        __asm__ volatile("mrs %0, tcr_el1" : "=r"(tcr));
+        kprintf("[dbg] TTBR0=%llx TCR=%llx\n",
+                (unsigned long long)ttbr0, (unsigned long long)tcr);
+        vmm_debug_walk(ttbr0 & 0x0000ffffffffffffULL, far);
+    }
 
     kprintf("[proc] FAULT pid %d (%s): EC=%llx FAR=%016llx "
             "ELR=%016llx\n",

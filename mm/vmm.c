@@ -799,3 +799,34 @@ int vmm_copy_space(paddr_t dst_root, paddr_t src_root,
     }
     return 0;
 }
+
+/* ---- TEMP fault-diagnosis helper (proc_user_fault) --------------------- */
+void vmm_debug_walk(uint64_t root_pa, uint64_t va)
+{
+    uint64_t *t = (uint64_t *)(uintptr_t)root_pa;
+    unsigned idx[4];
+
+    idx[0] = L0_IDX(va);
+    idx[1] = L1_IDX(va);
+    idx[2] = L2_IDX(va);
+    idx[3] = L3_IDX(va);
+
+    kprintf("[dbg] walk va=%llx root=%llx\n",
+            (unsigned long long)va, (unsigned long long)root_pa);
+
+    for (unsigned lvl = 0; lvl < 4; lvl++) {
+        uint64_t d = t[idx[lvl]];
+
+        kprintf("[dbg]  L%u[%u] = %016llx (table %llx)\n",
+                lvl, idx[lvl], (unsigned long long)d,
+                (unsigned long long)(uintptr_t)t);
+        if (!(d & PTE_VALID)) {
+            kprintf("[dbg]  -> INVALID at L%u\n", lvl);
+            return;
+        }
+        if (lvl < 3)
+            t = table_ptr(d);
+    }
+    kprintf("[dbg]  -> leaf pa=%llx\n",
+            (unsigned long long)(t[L3_IDX(va)] & PT_ADDR_MASK));
+}

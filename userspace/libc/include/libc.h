@@ -176,7 +176,7 @@ sighandler_t sigaction(int sig, sighandler_t h);
 void   sleep_ms(u64 ms);
 u64    uptime_ms(void);
 void  *mmap_anon(size_t len);        /* SYS_mmap, private anonymous   */
-void  *sbrk(i64 incr);               /* malloc's growth primitive     */
+char  *sbrk(i64 incr);               /* malloc's growth primitive     */
 
 int    psinfo(void *ents, unsigned max);
 int    mountinfo(void *ents, unsigned max);

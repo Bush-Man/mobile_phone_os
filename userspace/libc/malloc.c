@@ -145,7 +145,7 @@ void *realloc(void *p, size_t n)
 
 /* sbrk: raw bump allocator over the same SYS_brk window; exposed
  * for tests that want allocator-free arena behavior                */
-void *sbrk(i64 incr)
+char *sbrk(i64 incr)
 {
     char *old;
 

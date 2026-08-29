@@ -44,6 +44,7 @@ void phase10_init(const struct platform_info *plat);
 void phase11_init(const struct platform_info *plat);
 void phase12_init(const struct platform_info *plat);
 void phase13_init(const struct platform_info *plat);
+void phase14_init(const struct platform_info *plat);
 
 static void housekeeping_task(void *arg)
 {
@@ -84,6 +85,13 @@ static void housekeeping_task(void *arg)
          */
         audio_tick(ms);
 
+        /*
+         * phase 14: dead-and-parked THREAD slots get their stacks
+         * freed here (kernel task context; only settled slots are
+         * touched) and a freed thread can unblock an init reap.
+         */
+        proc_threads_reclaim();
+
         /* one uptime line per second */
         if ((long)(jiffies_read() - mark) >= TIME_HZ) {
             mark += TIME_HZ;
@@ -98,7 +106,7 @@ static void housekeeping_task(void *arg)
 
 extern const struct platform_info *smp_plat;
 
-#define BANNER "[OK] mobile_phone_os phase 13"
+#define BANNER "[OK] mobile_phone_os phase 14"
 
 /*
  * Phase 5 milestone demo: spawn the built-in static "hello" ELF at
@@ -302,6 +310,17 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
      * ringer (see docs/PHASE_13.md).
      */
     phase13_init(&plat);
+
+    /*
+     * Phase 14: userspace foundation. crash records armed (RAM ring
+     * + lazy /var/crash/records), the libc and its battery binary
+     * exist as built-ins, and "init" runs as PID 1: it lays the /var
+     * scaffolding, starts batteryd/udevd/timed and the interactive
+     * shell, then reaps orphans and respawns critical daemons --
+     * while "usertest" drives the libc, crash-record and respawn
+     * batteries against it (see docs/PHASE_14.md).
+     */
+    phase14_init(&plat);
 
     kprintf("%s\n", BANNER);
 

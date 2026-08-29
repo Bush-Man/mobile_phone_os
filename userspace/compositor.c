@@ -90,6 +90,13 @@ struct window {
     u32  w, h;
     i32  x, y;
     bool visible;
+
+    /* phase 16 (item 88): dirty-rect accumulation. An app FLUSH
+     * no longer triggers a full-screen recompose: the render
+     * thread blits only this window's union rect into the stage
+     * and presents just that strip. */
+    bool has_dirty;
+    u32  dx0, dy0, dx1, dy1;
 };
 
 struct client {
@@ -120,6 +127,10 @@ static char pin[8];                 /* digits entered so far       */
 
 static pthread_mutex_t ui_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile bool need_redraw;
+
+/* phase 16 (item 88): per-window dirty bits consumed by the
+ * render thread (see struct window + UI_FLUSH)                    */
+static volatile u32 win_dirty_mask;
 
 static struct {
     char text[28];
@@ -456,6 +467,22 @@ static void redraw_stage(void)
 
 /* ---- render thread ------------------------------------------------------- */
 
+/* phase 16 (item 88): composite + present one window's dirty
+ * strip only -- an app frame costs its own rect, not a full
+ * 800x600 pass (the GPU-less fast path)                            */
+static void present_window_strip(struct window *w)
+{
+    u32 dx0 = w->dx0, dy0 = w->dy0;
+    u32 dw = w->dx1 - w->dx0, dh = w->dy1 - w->dy0;
+
+    for (u32 r = 0; r < dh; r++)
+        memcpy(stage.px + (u64)(w->y + (i32)(dy0 + r)) * stage.w +
+                   (u32)w->x + dx0,
+               w->va + (u64)(dy0 + r) * w->w + dx0, dw * 4u);
+    fb_blit((u32)w->x + dx0, (u32)w->y + dy0, dw, dh);
+    w->has_dirty = false;
+}
+
 static void *render_thread(void *arg)
 {
     u32 last_sec = 0xffffffffu;
@@ -463,7 +490,7 @@ static void *render_thread(void *arg)
     (void)arg;
     for (;;) {
         struct batt_info bi;
-        bool tick;
+        u32 dirty;
 
         sleep_ms(100);
 
@@ -475,11 +502,29 @@ static void *render_thread(void *arg)
         }
 
         pthread_mutex_lock(&ui_lock);
-        tick = last_sec != (u32)(now_ms() / 1000u);
-        if (need_redraw || tick) {
+
+        /* 1. app frames: per-window strips (item 88 fast path)    */
+        dirty = win_dirty_mask;
+        win_dirty_mask = 0;
+        while (dirty) {
+            unsigned i = __builtin_ctz(dirty);
+
+            dirty &= ~(1u << i);
+            if (wins[i].used && wins[i].visible && wins[i].va &&
+                wins[i].has_dirty)
+                present_window_strip(&wins[i]);
+        }
+
+        /* 2. full recompose for mode/focus/banner changes         */
+        if (need_redraw) {
             redraw_stage();
             fb_blit(0, 0, stage.w, stage.h);
             need_redraw = false;
+            last_sec = (u32)(now_ms() / 1000u);
+        } else if (last_sec != (u32)(now_ms() / 1000u)) {
+            /* 3. clock/battery tick: just the status strip        */
+            draw_status_bar();
+            fb_blit(0, 0, stage.w, UI_STATUS_H);
             last_sec = (u32)(now_ms() / 1000u);
         }
         pthread_mutex_unlock(&ui_lock);
@@ -730,7 +775,40 @@ static void *client_thread(void *arg)
         }
 
         case UI_FLUSH:
-            need_redraw = true;
+            /*
+             * phase 16 (item 88): accumulate the dirty rect in
+             * surface coords; the render thread recomposites just
+             * this window's strip. Falls back to the full path
+             * only when the window is not currently visible.
+             */
+            if (cl->win >= 0 && wins[cl->win].used) {
+                struct window *w = &wins[cl->win];
+                u32 x0 = m.a > 0 ? (u32)m.a : 0u;
+                u32 y0 = m.b > 0 ? (u32)m.b : 0u;
+                u32 x1 = x0 + (u32)(m.c > 0 ? m.c : 0) ;
+                u32 y1 = y0 + (u32)(m.d > 0 ? m.d : 0);
+
+                if (x1 > w->w)
+                    x1 = w->w;
+                if (y1 > w->h)
+                    y1 = w->h;
+                if (x1 <= x0 || y1 <= y0) {
+                    x0 = 0; y0 = 0; x1 = w->w; y1 = w->h;
+                }
+                if (!w->has_dirty) {
+                    w->dx0 = x0; w->dy0 = y0;
+                    w->dx1 = x1; w->dy1 = y1;
+                    w->has_dirty = true;
+                } else {
+                    if (x0 < w->dx0) w->dx0 = x0;
+                    if (y0 < w->dy0) w->dy0 = y0;
+                    if (x1 > w->dx1) w->dx1 = x1;
+                    if (y1 > w->dy1) w->dy1 = y1;
+                }
+                win_dirty_mask |= 1u << cl->win;
+            } else {
+                need_redraw = true;
+            }
             break;
 
         case UI_SHOW:

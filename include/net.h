@@ -262,6 +262,7 @@ struct dhcp_result {
 
 int  dhcp_discover(struct netif *nif, struct dhcp_result *out,
                    uint32_t timeout_ms);
+void dhcp_tick(uint64_t now_ms);    /* lease maintenance (timers)  */
 int  dns_resolve(const char *name, uint32_t *ip_out,
                  uint32_t timeout_ms);
 

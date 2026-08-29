@@ -102,10 +102,9 @@ static void us_park(struct waitqueue *wq)
     pc->current->wq_next = wq->head;
     wq->head = pc->current;
     pc->current->state = TASK_BLOCKED;
-    spin_unlock_irqrestore(&task_state_lock, st);
 
     spin_unlock(&unix_lock);
-    sched_park();                   /* never returns                */
+    sched_park();                   /* task_state_lock transfers    */
 }
 
 void usock_subsys_init(void)

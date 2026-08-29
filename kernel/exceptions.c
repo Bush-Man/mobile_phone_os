@@ -52,9 +52,14 @@ void exceptions_handler(struct trap_frame *tf, unsigned kind)
     uint64_t far;
     bool from_user = (tf->spsr & 0xc) == 0;     /* SPSR.M[3:2] == EL0 */
 
-    /* faults must be able to report even with locks wedged */
-    uart_panic_mode();
-
+    /*
+     * No unconditional uart_panic_mode() here: this handler also
+     * carries every IRQ and syscall, and raw mode is sticky -- the
+     * first interrupt would have disabled tx locking forever, so
+     * every later kprintf from concurrent cpus interleaved mid-word.
+     * The genuinely fatal fallthrough below ends in panic(), which
+     * sets raw mode itself once locks may actually be wedged.
+     */
     __asm__ volatile("mrs %0, far_el1" : "=r"(far));
 
     /*

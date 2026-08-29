@@ -63,10 +63,10 @@ static void ipc_park(struct waitqueue *wq)
     pc->current->wq_next = wq->head;
     wq->head = pc->current;
     pc->current->state = TASK_BLOCKED;
-    spin_unlock_irqrestore(&task_state_lock, st);
 
     spin_unlock(&ipc_lock);
-    sched_park();                   /* never returns                */
+    sched_park();                   /* task_state_lock transfers to
+                                     * the scheduler context        */
 }
 
 /* ipc_lock held: release everyone parked on wq */
@@ -126,9 +126,10 @@ void ipc_poll_park(int64_t timeout_ms)
     pc->current->wake_at =
         timeout_ms < 0 ? UINT64_MAX :
         jiffies_read() + (uint64_t)timeout_ms * TIME_HZ / 1000u + 1u;
-    spin_unlock_irqrestore(&task_state_lock, st);
 
-    sched_park();                   /* never returns                */
+    sched_park();                   /* park holding the lock; the
+                                     * scheduler releases it once our
+                                     * context is saved             */
 }
 
 /* ---- anonymous vnode factory ------------------------------------------------- */

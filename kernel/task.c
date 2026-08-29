@@ -159,9 +159,9 @@ void task_exit(void)
     if (!pc->current)
         panic("task_exit without current");
     pc->current->state = TASK_DEAD;
-    spin_unlock_irqrestore(&task_state_lock, s);
-
-    sched_park();                   /* never returns */
+    sched_park();                   /* DEAD is never dispatched -- the
+                                     * tripwire below stays reachable
+                                     * only via a state-machine bug  */
     panic("task_exit resumed a dead task");
 }
 
@@ -175,18 +175,20 @@ void task_yield(void)
         panic("task_yield without current");
     pc->current->state = TASK_READY;
     pc->current->rq_key = task_next_key();
-    spin_unlock_irqrestore(&task_state_lock, s);
-
-    sched_park();
+    sched_park();   /* READY only becomes dispatchable once the
+                     * park saved our context: the lock transfers
+                     * to the scheduler, which re-publishes us    */
 }
 
 /* ---- blocking primitives ------------------------------------------------ */
 
 /*
- * Park the current task with the given state and never return here:
- * control goes to the per-cpu scheduler context, which picks the
- * next task. Requires that state was already committed under the
- * lock by the caller.
+ * Park the current task and return when it is dispatched again.
+ * The caller must hold task_state_lock with IRQs masked: the lock
+ * transfers to the scheduler context across the switch, which
+ * releases it once the parking context is saved and quiescent.
+ * That handshake is what makes cross-cpu dispatch safe -- no task
+ * is ever READY against a stale (mid-save) context.
  */
 void sched_park(void)
 {
@@ -196,7 +198,10 @@ void sched_park(void)
         panic("sched_park without current");
 
     cpu_switch_to(&pc->current->ctx, &pc->sched_ctx);
-    panic("sched_park resumed a parked task");
+
+    /* resume: the scheduler released the lock for us while we were
+     * parked; undo the park-time masking and continue the caller  */
+    irq_local_unmask();
 }
 
 static void park_current(enum task_state state)
@@ -209,9 +214,7 @@ static void park_current(enum task_state state)
 
     spin_lock_irqsave(&task_state_lock, &s);
     pc->current->state = state;
-    spin_unlock_irqrestore(&task_state_lock, s);
-
-    sched_park();
+    sched_park();                   /* lock transfers to the scheduler */
 }
 
 void msleep(uint64_t msecs)
@@ -244,6 +247,9 @@ void wait_sleep_when(task_cond_t cond, void *cond_ctx,
      * Evaluate the predicate and enqueue atomically with respect to
      * any waker: both sides touch the condition under the scheduler
      * lock, so a wake between "check" and "sleep" is impossible.
+     * The lock stays held across the park (the scheduler releases it
+     * once this context is saved), so a waker can only publish us
+     * READY after the save -- never against a stale context.
      */
     spin_lock_irqsave(&task_state_lock, &s);
     if (!cond(cond_ctx)) {
@@ -257,9 +263,7 @@ void wait_sleep_when(task_cond_t cond, void *cond_ctx,
         wq->head = t;
         t->state = TASK_BLOCKED;
     }
-    spin_unlock_irqrestore(&task_state_lock, s);
-
-    sched_park();
+    sched_park();                       /* lock transfers onward */
 }
 
 void wait_wake_all(struct waitqueue *wq)

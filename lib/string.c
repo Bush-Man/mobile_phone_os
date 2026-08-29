@@ -89,6 +89,29 @@ int strncmp(const char *a, const char *b, size_t n)
     return 0;
 }
 
+char *strchr(const char *s, int c)
+{
+    for (;; s++) {
+        if (*s == (char)c)
+            return (char *)s;
+        if (!*s)
+            return NULL;
+    }
+}
+
+char *strstr(const char *hay, const char *needle)
+{
+    size_t nlen;
+
+    if (!*needle)
+        return (char *)hay;
+    nlen = strlen(needle);
+    for (; *hay; hay++)
+        if (strncmp(hay, needle, nlen) == 0)
+            return (char *)hay;
+    return NULL;
+}
+
 size_t kstrlcpy(char *dst, const char *src, size_t cap)
 {
     size_t slen = strlen(src);

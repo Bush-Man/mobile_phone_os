@@ -22,6 +22,9 @@
 #include "lib.h"
 #include "mm/pmm.h"
 #include "mm/vmm.h"
+#include "proc.h"   /* USER_CODE_BASE / USER_VA_LIMIT (the window
+                     * check below) -- never rely on a transitive
+                     * include for the VA layout contract          */
 
 typedef struct {
     uint8_t  e_ident[16];

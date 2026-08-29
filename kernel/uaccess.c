@@ -25,6 +25,7 @@
 #include "mm/vmm.h"
 #include "panic.h"
 #include "proc.h"
+#include "syscall.h"    /* EFAULT -- the error this file returns */
 #include "uaccess.h"
 
 static bool range_ok(uint64_t va, size_t len)

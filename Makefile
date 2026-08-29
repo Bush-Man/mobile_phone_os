@@ -16,6 +16,7 @@ CFLAGS := -Wall -Wextra -O2 -g \
           -fstack-protector-strong -mstack-protector-guard=global \
           -fno-pic -nostdlib \
           -march=armv8-a -mgeneral-regs-only \
+          -mno-outline-atomics \
           -Iinclude -Idrivers -Ikernel \
           -MMD -MP
 
@@ -24,10 +25,14 @@ LDFLAGS := -T linker.ld -nostdlib
 # ---- userspace (phase 5) ------------------------------------------------
 # Static freestanding ELFs linked into the per-process user window.
 # No FP/SIMD: the kernel does not save vector state across switches.
+# -mno-outline-atomics: libc's pthreads use __atomic builtins, and
+# the default outline path calls libgcc helpers (__aarch64_swp1_acq)
+# that -nostdlib cannot link; inline LDXR/STXR loops need nothing.
 USER_CFLAGS := -Wall -Wextra -O2 -g \
                -ffreestanding -fno-builtin -nostdlib \
                -fno-pic -fno-pie \
-               -march=armv8-a -mgeneral-regs-only
+               -march=armv8-a -mgeneral-regs-only \
+               -mno-outline-atomics
 
 SRCS_C := $(wildcard kernel/*.c drivers/*.c lib/*.c mm/*.c fs/*.c \
            net/*.c arch/aarch64/*.c)

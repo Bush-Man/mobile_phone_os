@@ -6,9 +6,17 @@
  * never switch between themselves: parking a task saves its context
  * into its own struct and jumps to the scheduler context, which then
  * picks the next READY task under the shared state lock and loads
- * it. Because a task's context is only ever written while that task
- * is actually executing, another cpu can safely pick it the moment
- * it is marked READY.
+ * it.
+ *
+ * Cross-cpu safety is a lock handshake, not the bare "only the
+ * owner writes its context" rule: a parking task holds
+ * task_state_lock ACROSS its switch, and the scheduler releases the
+ * lock only after landing -- i.e. after the context was fully saved.
+ * So a task is only ever READY (dispatchable) while its saved
+ * context is quiescent: waiters are woken strictly post-save, and
+ * yielders/preemptees publish themselves READY before the save but
+ * under the still-held lock, so no dispatcher can observe them
+ * until the save completed.
  *
  * One lock guards all state transitions. The per-cpu idle role is
  * played by the scheduler loop itself: when nothing is READY it
@@ -93,17 +101,25 @@ void sched_run(uint64_t cpu)
             next->state = TASK_RUNNING;
             next->quantum_left = SCHED_QUANTUM;
             pc->current = next;
-        }
-        spin_unlock_irqrestore(&task_state_lock, s);
-
-        if (!next) {
             /*
-             * Phase 10: idle goes through the PM governor now --
-             * WFI stays the implemented depth (GIC-armed interrupt
-             * paths are the wake sources by construction), the
-             * governor owns the accounting and the extension point
-             * for deeper states on real boards.
+             * Unlock but keep IRQs masked through the dispatch
+             * stretch: an interrupt here would run sched_post_irq
+             * on the scheduler stack against a task whose context
+             * is not loaded yet. The dispatched task unmasks on
+             * resume (sched_park).
              */
+            spin_unlock(&task_state_lock);
+        } else {
+            /*
+             * Idle: no dispatched task on this cpu anymore, so
+             * preemption/wake logic must see current == NULL (a
+             * stale pointer would let sched_post_irq "park" on the
+             * scheduler stack). Unmask for WFI -- wake sources are
+             * the GIC-armed interrupt paths by construction.
+             */
+            pc->current = NULL;
+            spin_unlock_irqrestore(&task_state_lock, s);
+            irq_local_unmask();
             pm_cpu_idle(cpu);
             continue;
         }
@@ -120,10 +136,14 @@ void sched_run(uint64_t cpu)
         cpu_switch_to(&pc->sched_ctx, &next->ctx);
         /*
          * Back: that task parked itself again (task_exit, blocking,
-         * or preemption). From this instant its context is quiescent
-         * -- phase 14 marks the handshake thread reclaim relies on.
+         * or preemption). It parked HOLDING task_state_lock -- the
+         * switch transferred the lock to us, and with it the proof
+         * that its context is fully saved and quiescent (phase 14's
+         * handshake thread reclaim relies on exactly this instant).
+         * Release the inherited lock and take the loop again.
          */
         pc->current->parked = true;
+        spin_unlock(&task_state_lock);
     }
 }
 
@@ -182,7 +202,6 @@ void sched_post_irq(void)
         pc->current->state = TASK_READY;
         pc->current->rq_key = task_next_key();
     }
-    spin_unlock_irqrestore(&task_state_lock, s);
-
-    sched_park();                   /* through the scheduler context */
+    sched_park();   /* park holding the lock; READY goes dispatchable
+                     * only once our context is saved                */
 }

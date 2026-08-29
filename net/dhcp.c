@@ -54,6 +54,10 @@ static struct {
     bool have;
 } dc;
 
+/* uptime-ms deadline of the cached lease; 0 = none held (or the
+ * server sent no lease option -- treated as a static address)    */
+static uint64_t dc_lease_until;
+
 static void put32(uint8_t *p, uint32_t v)
 {
     p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
@@ -220,6 +224,9 @@ int dhcp_discover(struct netif *nif, struct dhcp_result *out,
     if (!dc.last.gw)     dc.last.gw  = IP4_SLIRP_GW;
     if (!dc.last.dns)    dc.last.dns = IP4_SLIRP_DNS;
     if (!dc.last.netmask) dc.last.netmask = 0xffffff00u;
+    dc_lease_until = dc.last.lease_sec
+        ? time_uptime_ms() + (uint64_t)dc.last.lease_sec * 1000u
+        : 0;
 
     nif->ip_addr = dc.last.ip;
     nif->netmask = dc.last.netmask;
@@ -230,4 +237,21 @@ int dhcp_discover(struct netif *nif, struct dhcp_result *out,
 out:
     udp_free(pcb);
     return rc;
+}
+
+/*
+ * Lease maintenance (net_timers_tick). v1 drops the cached binding
+ * when the lease lapses, so the next dhcp_discover() runs a fresh
+ * exchange. No renewal yet (unicast REQUEST before expiry is the
+ * missing half): QEMU SLIRP hands out a de-facto static address, so
+ * the dev image never sees a lapse; real networks want the renewal.
+ */
+void dhcp_tick(uint64_t now_ms)
+{
+    if (!dc.have || !dc_lease_until || now_ms <= dc_lease_until)
+        return;
+
+    dc.have = false;
+    dc.last.bound = false;
+    dc_lease_until = 0;
 }

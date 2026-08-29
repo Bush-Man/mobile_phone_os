@@ -115,7 +115,11 @@ static unsigned wake_batch(struct waitqueue *wq)
 /*
  * Enqueue CURRENT onto ->wq and park, with no observable interval:
  * caller holds sync_lock; we take task_state_lock under it, link +
- * mark BLOCKED, then release both and switch away via sched_park().
+ * mark BLOCKED, then drop sync_lock and park WITH task_state_lock
+ * held -- the scheduler releases it once our context is saved, so a
+ * waker can only flip us READY against a quiescent context, and any
+ * waker that swept the queue before we linked did so while our
+ * predicate check still held sync_lock (no lost wakeup either way).
  */
 static void park_on_queue(struct waitqueue *wq)
 {
@@ -126,11 +130,10 @@ static void park_on_queue(struct waitqueue *wq)
     pc->current->wq_next = wq->head;
     wq->head = pc->current;
     pc->current->state = TASK_BLOCKED;
-    spin_unlock_irqrestore(&task_state_lock, st);
 
     spin_unlock(&sync_lock);
 
-    sched_park();                   /* never returns               */
+    sched_park();                   /* lock transfers to the sched  */
 }
 
 /* ---- deadlock detector --------------------------------------------------------- */

@@ -21,6 +21,8 @@
 #include <stdbool.h>
 
 #include "cpu.h"
+#include "irq.h"    /* irq_local_save/restore -- the scheduler demo
+                     * exercises the preemption-off window directly */
 #include "lib.h"
 #include "panic.h"
 #include "task.h"

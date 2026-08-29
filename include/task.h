@@ -106,8 +106,15 @@ struct task *current_task(void);    /* NULL while on scheduler stack  */
 void sched_tick(void);          /* timer top half: quantum + wakeups  */
 void sched_post_irq(void);      /* exception return preemption point  */
 
-/* park the current task into the per-cpu scheduler (never returns) */
-void sched_park(void) __attribute__((noreturn));
+/*
+ * Park the current task into the per-cpu scheduler; RETURNS when the
+ * task is dispatched again. Must be called HOLDING task_state_lock
+ * with IRQs masked: the lock transfers to the scheduler context across
+ * the switch and is released once the parking context is saved -- that
+ * handshake is what makes cross-cpu dispatch race-free (see sched.c).
+ * Resume comes back with IRQs unmasked and the lock free.
+ */
+void sched_park(void);
 
 /* ---- blocking primitives -------------------------------------------------- */
 

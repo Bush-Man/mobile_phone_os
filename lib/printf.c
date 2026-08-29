@@ -1,8 +1,10 @@
 /*
  * printf.c - minimal kernel formatter writing straight to the UART.
  * Supported conversions: %c %s %% %d %i %u %x %X %p,
- * with optional 'l' / 'll' length modifiers on integer conversions.
- * No width, precision or float support (kernel keeps FP registers off).
+ * with optional 'l' / 'll' length modifiers on integer conversions
+ * and an optional field width carrying '0' (zero pad) and '-'
+ * (left justify) flags. No precision or float support (kernel keeps
+ * FP registers off).
  */
 
 #include <stdarg.h>
@@ -21,39 +23,51 @@ static void emit(char c)
     kmsg_putc(c);
 }
 
-static void put_str(const char *s)
-{
-    if (!s)
-        s = "(null)";
-    while (*s)
-        emit(*s++);
-}
-
 static void put_pad(int width, int len, int zpad)
 {
     while (len++ < width)
         emit(zpad ? '0' : ' ');
 }
 
+static void put_str(const char *s, int width, int left)
+{
+    int len = 0;
+
+    if (!s)
+        s = "(null)";
+    while (s[len])
+        len++;
+    if (!left)
+        put_pad(width, len, 0);
+    while (*s)
+        emit(*s++);
+    if (left)
+        put_pad(width, len, 0);
+}
+
 static void put_ull(unsigned long long v, unsigned base, int uppercase,
-                    int width, int zpad)
+                    int width, int zpad, int left)
 {
     char buf[24];
     const char *digits = uppercase ? "0123456789ABCDEF"
                                    : "0123456789abcdef";
-    int i = 0;
+    int i = 0, n;
 
     do {
         buf[i++] = digits[v % base];
         v /= base;
     } while (v);
+    n = i;
 
-    put_pad(width, i, zpad);
+    if (!left)
+        put_pad(width, n, zpad);
     while (i--)
         emit(buf[i]);
+    if (left)
+        put_pad(width, n, 0);
 }
 
-static void put_ll(long long v, int width, int zpad)
+static void put_ll(long long v, int width, int zpad, int left)
 {
     unsigned long long mag = (v < 0) ? -(unsigned long long)v
                                      : (unsigned long long)v;
@@ -61,7 +75,7 @@ static void put_ll(long long v, int width, int zpad)
     if (v < 0)
         emit('-');
     put_ull(mag, 10, 0,
-            v < 0 ? (width ? width - 1 : 0) : width, zpad);
+            v < 0 ? (width ? width - 1 : 0) : width, zpad, left);
 }
 
 void kprintf(const char *fmt, ...)
@@ -73,15 +87,18 @@ void kprintf(const char *fmt, ...)
     uart_tx_begin(&s);
     va_start(ap, fmt);
     for (p = fmt; *p; p++) {
-        int lcount, width = 0, zpad = 0;
+        int lcount, width = 0, zpad = 0, left = 0;
 
         if (*p != '%') {
             emit(*p);
             continue;
         }
         p++;
-        if (*p == '0') {
-            zpad = 1;
+        while (*p == '-' || *p == '0') {
+            if (*p == '-')
+                left = 1;
+            else
+                zpad = 1;
             p++;
         }
         while (*p >= '0' && *p <= '9') {
@@ -99,20 +116,20 @@ void kprintf(const char *fmt, ...)
             emit((char)va_arg(ap, int));
             break;
         case 's':
-            put_str(va_arg(ap, const char *));
+            put_str(va_arg(ap, const char *), width, left);
             break;
         case 'd':
         case 'i': {
             long long v = (lcount >= 1) ? va_arg(ap, long long)
                                         : (long long)va_arg(ap, int);
-            put_ll(v, width, zpad);
+            put_ll(v, width, zpad, left);
             break;
         }
         case 'u': {
             unsigned long long v =
                 (lcount >= 1) ? va_arg(ap, unsigned long long)
                               : (unsigned long long)va_arg(ap, unsigned int);
-            put_ull(v, 10, 0, width, zpad);
+            put_ull(v, 10, 0, width, zpad, left);
             break;
         }
         case 'x':
@@ -120,16 +137,16 @@ void kprintf(const char *fmt, ...)
             unsigned long long v =
                 (lcount >= 1) ? va_arg(ap, unsigned long long)
                               : (unsigned long long)va_arg(ap, unsigned int);
-            put_ull(v, 16, *p == 'X', width, zpad);
+            put_ull(v, 16, *p == 'X', width, zpad, left);
             break;
         }
         case 'p': {
             unsigned long long v =
                 (unsigned long long)(uintptr_t)va_arg(ap, void *);
 
-            put_str("0x");
+            put_str("0x", 0, 0);
             put_ull(v, 16, 0,
-                    width > 2 ? width - 2 : 0, zpad);
+                    width > 2 ? width - 2 : 0, zpad, left);
             break;
         }
         case '%':

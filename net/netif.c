@@ -20,7 +20,6 @@
 void arp_input(const uint8_t *pkt, unsigned len, struct netif *nif);
 void ipv4_input(struct netif *nif, const uint8_t *pkt, unsigned len);
 void tcp_timers_tick(uint64_t now_ms);
-void dhcp_tick(uint64_t now_ms);
 void udp_input(struct netif *nif, uint32_t src, uint32_t dst,
               const uint8_t *pkt, unsigned len);
 void tcp_input(struct netif *nif, uint32_t src, uint32_t dst,

@@ -27,10 +27,37 @@
 static struct at_engine eng;
 static bool inited;
 
-static modem_call_event_fn call_fn;
-static void *call_arg;
-static modem_sms_rx_fn sms_fn;
-static void *sms_arg;
+/*
+ * Phase 15: more than one listener needs modem events now (the
+ * phase-12 battery AND the modemd broker). The setter is kept for
+ * compatibility but registers into a small chain; delivery walks
+ * every entry. NULL fn unregisters that pair.
+ */
+#define MODEM_OBSERVERS 4u
+
+static struct {
+    modem_call_event_fn fn;
+    void *arg;
+} call_obs[MODEM_OBSERVERS];
+
+static struct {
+    modem_sms_rx_fn fn;
+    void *arg;
+} sms_obs[MODEM_OBSERVERS];
+
+static void modem_call_event_all(enum call_event e)
+{
+    for (unsigned i = 0; i < MODEM_OBSERVERS; i++)
+        if (call_obs[i].fn)
+            call_obs[i].fn(e, call_obs[i].arg);
+}
+
+static void modem_sms_event_all(const char *sender, const char *text)
+{
+    for (unsigned i = 0; i < MODEM_OBSERVERS; i++)
+        if (sms_obs[i].fn)
+            sms_obs[i].fn(sender, text, sms_obs[i].arg);
+}
 
 /* ---- query plumbing ------------------------------------------------------------ */
 
@@ -72,26 +99,22 @@ static void urc_line(const char *line, void *arg)
     if (!strncmp(line, "RING", 4)) {
         call_ctl_apply(CALL_EV_INCOMING);
         call_ctl_apply(CALL_EV_RING);
-        if (call_fn)
-            call_fn(CALL_EV_INCOMING, call_arg);
+        modem_call_event_all(CALL_EV_INCOMING);
         return;
     }
     if (!strncmp(line, "CONNECT", 7)) {
         call_ctl_apply(CALL_EV_CONNECT);
-        if (call_fn)
-            call_fn(CALL_EV_CONNECT, call_arg);
+        modem_call_event_all(CALL_EV_CONNECT);
         return;
     }
     if (!strncmp(line, "NO CARRIER", 10)) {
         call_ctl_apply(CALL_EV_HANGUP_REMOTE);
-        if (call_fn)
-            call_fn(CALL_EV_HANGUP_REMOTE, call_arg);
+        modem_call_event_all(CALL_EV_HANGUP_REMOTE);
         return;
     }
     if (!strncmp(line, "BUSY", 4)) {
         call_ctl_apply(CALL_EV_BUSY);
-        if (call_fn)
-            call_fn(CALL_EV_BUSY, call_arg);
+        modem_call_event_all(CALL_EV_BUSY);
         return;
     }
     if (!strncmp(line, "+CMT:", 5)) {
@@ -151,14 +174,28 @@ void modem_tick(uint64_t now_ms)
 
 void modem_set_call_handler(modem_call_event_fn fn, void *arg)
 {
-    call_fn  = fn;
-    call_arg = arg;
+    for (unsigned i = 0; i < MODEM_OBSERVERS; i++) {
+        if (call_obs[i].fn == fn && call_obs[i].arg == arg)
+            return;                 /* already registered         */
+        if (!call_obs[i].fn || !fn) {
+            call_obs[i].fn = fn;
+            call_obs[i].arg = fn ? arg : NULL;
+            return;
+        }
+    }
 }
 
 void modem_set_sms_handler(modem_sms_rx_fn fn, void *arg)
 {
-    sms_fn  = fn;
-    sms_arg = arg;
+    for (unsigned i = 0; i < MODEM_OBSERVERS; i++) {
+        if (sms_obs[i].fn == fn && sms_obs[i].arg == arg)
+            return;
+        if (!sms_obs[i].fn || !fn) {
+            sms_obs[i].fn = fn;
+            sms_obs[i].arg = fn ? arg : NULL;
+            return;
+        }
+    }
 }
 
 /* ---- dial / answer / hangup ---------------------------------------------------------- */
@@ -446,8 +483,7 @@ static void cmt_finish(void)
     if (sms_parse_deliver_pdu(pdu, plen, sender, sizeof(sender),
                               text, sizeof(text)) == 0) {
         sms_store_inbox(sender, text);
-        if (sms_fn)
-            sms_fn(sender, text, sms_arg);
+        modem_sms_event_all(sender, text);
     }
     cmt.await_pdu = false;
 }

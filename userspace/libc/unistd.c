@@ -97,6 +97,12 @@ int mkdir(const char *path)
     return (int)_sys1(SYS_mkdir, (i64)path);
 }
 
+/* arg is u64 so callers can pass pointers or plain values alike   */
+int ioctl(int fd, u64 cmd, u64 arg)
+{
+    return (int)_sys3(SYS_ioctl, fd, (i64)cmd, (i64)arg);
+}
+
 int getpid(void)
 {
     return (int)_sys0(SYS_getpid);
@@ -167,6 +173,11 @@ int usock_serve(const char *path)
 int usock_connect(const char *path)
 {
     return (int)_sys1(SYS_usock_connect, (i64)path);
+}
+
+int usock_accept(int lfd)
+{
+    return (int)_sys1(SYS_usock_accept, lfd);
 }
 
 /* ---- phase-14 report calls ----------------------------------------- */

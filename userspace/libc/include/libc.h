@@ -54,6 +54,7 @@ typedef __builtin_va_list va_list;
 #define SYS_dup       26
 #define SYS_usock_serve   32
 #define SYS_usock_connect 33
+#define SYS_usock_accept  55
 #define SYS_socket    34
 #define SYS_connect   35
 #define SYS_send      39
@@ -172,6 +173,7 @@ int    close(int fd);
 i64    lseek(int fd, i64 off, int whence);
 int    unlink(const char *path);
 int    mkdir(const char *path);
+int    ioctl(int fd, u64 cmd, u64 arg);
 int    getpid(void);
 int    fork(void);
 int    execve(const char *name, char *const argv[], char *const envp[]);
@@ -187,6 +189,7 @@ void  *shmat(int id);                /* map into this process         */
 int    shmdt(void *va);
 int    usock_serve(const char *path);    /* publish listener fd       */
 int    usock_connect(const char *path);  /* connect -> fd             */
+int    usock_accept(int lfd);            /* accept -> conn fd         */
 
 int    psinfo(void *ents, unsigned max);
 int    mountinfo(void *ents, unsigned max);

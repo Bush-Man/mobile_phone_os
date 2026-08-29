@@ -24,11 +24,14 @@ typedef signed   int   i32;
 typedef unsigned int   u32;
 typedef unsigned short u16;
 
-/* ---- layout constants (shared by compositor + apps) --------------- */
+/* ---- layout constants (shared by compositor + apps) ---------------
+ * ui_layout.h (include/) carries the chrome geometry the kernel
+ * selftest compiles against too -- see its header comment.         */
+
+#include "ui_layout.h"
 
 #define UI_SCREEN_W     800u
 #define UI_SCREEN_H     600u
-#define UI_STATUS_H      24u
 #define UI_TITLE_H       20u
 
 /* app window geometry: compositor assigns this box on OPEN          */
@@ -36,10 +39,6 @@ typedef unsigned short u16;
 #define UI_WIN_H        360u
 #define UI_WIN_X        ((UI_SCREEN_W - UI_WIN_W) / 2u)
 #define UI_WIN_Y        (UI_STATUS_H + 32u)
-
-/* home-screen launcher grid (compositor-owned)                      */
-#define UI_ICON_W       150u
-#define UI_ICON_H        64u
 
 /* ---- wire protocol ------------------------------------------------- */
 
@@ -71,6 +70,16 @@ enum ui_msg_type {
 #define UI_NOTIFY_SMS    1u
 #define UI_NOTIFY_CALL   2u
 #define UI_NOTIFY_INFO   3u
+
+/* input_event wire values echoed inside UI_EVENT (a/b/c carry
+ * the kernel's type/code/value triple; mirror of
+ * include/input.h)                                                  */
+#define UI_EV_SYN      0u
+#define UI_EV_KEY      1u
+#define UI_EV_ABS      3u
+#define UI_ABS_X       0u
+#define UI_ABS_Y       1u
+#define UI_BTN_TOUCH   330u
 
 /* ---- gfx (a surface is packed XRGB8888 rows) ----------------------- */
 

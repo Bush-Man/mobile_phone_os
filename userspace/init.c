@@ -30,6 +30,9 @@ static struct service services[] = {
     { "batteryd", "batteryd", -1, 1 },
     { "udevd",    "udevd",    -1, 1 },
     { "timed",    "timed",    -1, 1 },
+    /* phase 15: owns fb0/event0; not critical -- on a GPU-less
+     * boot it exits gracefully instead of respawn-looping        */
+    { "compositor", "compositor", -1, 0 },
     { "sh",       "sh",       -1, 1 },
 };
 

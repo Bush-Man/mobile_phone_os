@@ -90,3 +90,61 @@ builtin_crasher_start:
     .incbin "userspace/crasher"
 .global builtin_crasher_end
 builtin_crasher_end:
+
+/* phase 15: compositor + phone apps (UI toolkit linked)            */
+
+.align 3
+.global builtin_compositor_start
+builtin_compositor_start:
+    .incbin "userspace/compositor"
+.global builtin_compositor_end
+builtin_compositor_end:
+
+.align 3
+.global builtin_dialer_start
+builtin_dialer_start:
+    .incbin "userspace/dialer"
+.global builtin_dialer_end
+builtin_dialer_end:
+
+.align 3
+.global builtin_msgs_start
+builtin_msgs_start:
+    .incbin "userspace/msgs"
+.global builtin_msgs_end
+builtin_msgs_end:
+
+.align 3
+.global builtin_contacts_start
+builtin_contacts_start:
+    .incbin "userspace/contacts"
+.global builtin_contacts_end
+builtin_contacts_end:
+
+.align 3
+.global builtin_clock_start
+builtin_clock_start:
+    .incbin "userspace/clock"
+.global builtin_clock_end
+builtin_clock_end:
+
+.align 3
+.global builtin_calc_start
+builtin_calc_start:
+    .incbin "userspace/calc"
+.global builtin_calc_end
+builtin_calc_end:
+
+.align 3
+.global builtin_settings_start
+builtin_settings_start:
+    .incbin "userspace/settings"
+.global builtin_settings_end
+builtin_settings_end:
+
+.align 3
+.global builtin_uitest_start
+builtin_uitest_start:
+    .incbin "userspace/uitest"
+.global builtin_uitest_end
+builtin_uitest_end:

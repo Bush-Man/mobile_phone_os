@@ -30,10 +30,21 @@ def main():
     machine_args = sys.argv[2].split()
     kernel = sys.argv[3]
     logfile = sys.argv[4]
-    phase = sys.argv[5] if len(sys.argv) > 5 else "3"
+    phase = int(sys.argv[5]) if len(sys.argv) > 5 else 3
     marker = f"phase{phase}rx\r".encode()
     echo_tag = f"phase{phase}rx".encode()
     banner = f"[OK] mobile_phone_os phase {phase}".encode()
+
+    # phase 15+: the compositor owns fb0/event0, so the guest needs
+    # the virtio display + input devices even headless (the GPU
+    # renders into an off-screen host surface under -display none)
+    ui_devices = ["-device", "virtio-gpu-device",
+                  "-device", "virtio-tablet-device",
+                  "-device", "virtio-keyboard-device"] \
+        if phase >= 15 else []
+
+    # the UI battery waits for init -> compositor -> app chain
+    deadline_s = 30.0 if phase >= 15 else DEADLINE
 
     for f in (SOCKET, logfile):
         try:
@@ -45,7 +56,7 @@ def main():
            ["-display", "none", "-monitor", "none",
             "-chardev", f"socket,id=ser0,path={SOCKET},server=on,wait=off",
             "-serial", "chardev:ser0",
-            "-kernel", kernel])
+            "-kernel", kernel] + ui_devices)
     send_input = "--no-input" not in sys.argv
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL)
@@ -75,16 +86,24 @@ def main():
 
     def check(b):
         ok = (banner in b and b"s uptime" in b and echo_tag in b)
-        if phase >= "4":
+        if phase >= 4:
             ok = ok and (b"ping: round" in b and b"pong: round" in b)
-        if phase >= "5":
+        if phase >= 5:
             ok = ok and (b"running at EL0" in b and
                          b"hello: exiting 42" in b and
                          b"exited with code 42" in b)
+        if phase >= 15:
+            ok = ok and (
+                b"selftest: ui ok" in b and
+                b"[uitest] protocol ok" in b and
+                b"[ui] unlock ok" in b and
+                b"[ui] launch dialer" in b and
+                b"[dialer] ready" in b and
+                b"[ui] banner: SMS" in b)
         return ok
 
     try:
-        while time.time() - t0 < DEADLINE:
+        while time.time() - t0 < deadline_s:
             sock.settimeout(0.25)
             try:
                 data = sock.recv(4096)
@@ -124,12 +143,18 @@ def main():
     print(f"  banner : {banner in buf}")
     print(f"  uptime : {b's uptime' in buf}")
     print(f"  rx echo: {echo_tag in buf}")
-    if phase >= "4":
+    if phase >= 4:
         print(f"  threads: {b'ping: round' in buf and b'pong: round' in buf}")
-    if phase >= "5":
+    if phase >= 5:
         print(f"  el0 run : {b'running at EL0' in buf}")
         print(f"  u exit  : {b'hello: exiting 42' in buf}")
         print(f"  k reaped: {b'exited with code 42' in buf}")
+    if phase >= 15:
+        print(f"  ui proto : {b'[uitest] protocol ok' in buf}")
+        print(f"  ui unlock: {b'[ui] unlock ok' in buf}")
+        print(f"  ui launch: {b'[ui] launch dialer' in buf}")
+        print(f"  ui banner: {b'[ui] banner: SMS' in buf}")
+        print(f"  ui selft : {b'selftest: ui ok' in buf}")
     with open(logfile, "rb") as f:
         tail = f.read()[-800:].decode(errors="replace")
     print("--- last serial output ---")

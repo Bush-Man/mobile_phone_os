@@ -131,12 +131,36 @@ userspace/crasher: userspace/crasher.c $(LIBC_OBJS) \
 	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
 	    $(LIBC_OBJS)
 
+# ---- phase 15: compositor + phone apps --------------------------------------
+# UI programs link the libc objects PLUS the phase-15 toolkit
+# (surface gfx, widgets/keyboard, client library). -Iinclude is
+# needed for ui_layout.h, the chrome-geometry contract shared with
+# the kernel selftest.
+
+UI_LIB_OBJS := $(BUILD)/ui_gfx.o $(BUILD)/ui_widgets.o \
+               $(BUILD)/ui_client.o
+
+$(BUILD)/ui_%.o: userspace/ui/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include -Iinclude \
+	    -c $< -o $@
+
+UI_PROGS := compositor dialer msgs contacts clock calc settings \
+            uitest
+
+$(UI_PROGS:%=userspace/%): userspace/%.c $(LIBC_OBJS) \
+                           $(UI_LIB_OBJS) userspace/libc/user.ld
+	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include -Iinclude \
+	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
+	    $(LIBC_OBJS) $(UI_LIB_OBJS)
+
 $(BUILD)/arch/aarch64/builtin_imgs.o: userspace/hello userspace/ipcdemo \
                                        userspace/evreader userspace/netcli \
                                        userspace/init userspace/sh \
                                        userspace/batteryd userspace/udevd \
                                        userspace/timed userspace/libctest \
-                                       userspace/crasher
+                                       userspace/crasher \
+                                       $(UI_PROGS:%=userspace/%)
 
 dtb:
 	$(QEMU) -M virt -cpu cortex-a53 -m 128M -display none \
@@ -147,7 +171,7 @@ run: all
 
 test: all
 	@python3 tests/serial_harness.py "$(QEMU)" "$(QEMU_ARGS)" \
-	    $(KERNEL) $(BUILD)/serial.log 14
+	    $(KERNEL) $(BUILD)/serial.log 15
 
 # ---- phase 9: graphics + input demo targets -------------------------------
 # virtio-gpu renders into an off-screen host surface by default;

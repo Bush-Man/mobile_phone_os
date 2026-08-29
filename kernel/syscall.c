@@ -28,7 +28,9 @@
 #include <stdbool.h>
 
 #include "exceptions.h"
+#include "battery.h"
 #include "chardev.h"
+#include "device.h"
 #include "ipc.h"
 #include "irq.h"
 #include "lib.h"
@@ -39,6 +41,7 @@
 #include "net.h"
 #include "panic.h"
 #include "proc.h"
+#include "psci.h"
 #include "signal.h"
 #include "syscall.h"
 #include "task.h"
@@ -47,6 +50,7 @@
 #include "uaccess.h"
 #include "uart.h"
 #include "unsock.h"
+#include "usabi.h"
 #include "vfs.h"
 
 typedef long (*sys_fn_t)(uint64_t, uint64_t, uint64_t,
@@ -970,6 +974,243 @@ static long sys_select(uint64_t nfds, uint64_t rd, uint64_t wr,
     return ready;
 }
 
+/* ---- phase 14: userspace foundation ---------------------------------------- */
+
+/*
+ * SYS_brk contract: arg 0 queries. A new top is refused (returning
+ * the UNCHANGED top, the classic brk tell) when it would leave the
+ * [brk_floor, PH14_BRK_LIMIT) window. Growth maps zeroed user pages;
+ * shrink unmaps and frees whole pages above the new top. p->brk is
+ * always page-aligned, so malloc sees a clean boundary.
+ */
+#define PH14_BRK_LIMIT  0x000001F000000000ULL   /* below the stack floor */
+
+static long sys_brk(uint64_t unew)
+{
+    struct proc *p = proc_current();
+    uint64_t have, want;
+
+    if (!p)
+        return -EINVAL;
+
+    if (!unew)
+        return (long)p->brk;
+    if (unew < p->brk_floor || unew > PH14_BRK_LIMIT)
+        return (long)p->brk;            /* refused: top unchanged      */
+
+    have = p->brk;
+    want = ALIGN_UP(unew, PAGE_SIZE);
+
+    if (want > have) {
+        for (uint64_t va = have; va < want; va += PAGE_SIZE) {
+            paddr_t pa = pmm_alloc();
+
+            if (!pa)
+                break;                  /* partial growth is legal    */
+            if (vmm_map_at(p->root_pa, va, pa,
+                           VM_READ | VM_WRITE | VM_USER)) {
+                pmm_free(pa);
+                break;
+            }
+            memset((void *)vmm_dmap(pa), 0, PAGE_SIZE);
+            have = va + PAGE_SIZE;
+        }
+    } else if (want < have) {
+        for (uint64_t va = want; va < have; va += PAGE_SIZE) {
+            paddr_t pa;
+            unsigned fl;
+
+            if (vmm_probe(p->root_pa, va, &pa, &fl)) {
+                vmm_unmap_at(p->root_pa, va);
+                pmm_free(pa);
+            }
+        }
+    }
+
+    p->brk = want;
+    return (long)p->brk;
+}
+
+/* report caps: kernel-side scratch stays small on the 16 KiB kstack */
+#define PSINFO_MAX    64u
+#define MOUNTINFO_MAX  8u
+#define NETINFO_MAX    8u
+#define DEVLIST_MAX   32u
+
+static long sys_psinfo(uint64_t uents, uint64_t umax)
+{
+    struct psinfo_entry kents[PSINFO_MAX];
+    unsigned n;
+
+    if (!uents || !umax)
+        return 0;
+    n = proc_psinfo_fill(kents, umax > PSINFO_MAX ? PSINFO_MAX : umax);
+    if (n && uacc_copy_out_cur((void *)(uintptr_t)uents, kents,
+                               n * sizeof(kents[0])))
+        return -EFAULT;
+    return (long)n;
+}
+
+static long sys_mountinfo(uint64_t uents, uint64_t umax)
+{
+    struct mountinfo_entry kents[MOUNTINFO_MAX];
+    unsigned n;
+
+    if (!uents || !umax)
+        return 0;
+    n = vfs_mountinfo_fill(kents,
+                           umax > MOUNTINFO_MAX ? MOUNTINFO_MAX : umax);
+    if (n && uacc_copy_out_cur((void *)(uintptr_t)uents, kents,
+                               n * sizeof(kents[0])))
+        return -EFAULT;
+    return (long)n;
+}
+
+/*
+ * Mount a memory filesystem type ("ramfs") at an absolute path from
+ * EL0. Disk-backed mounts stay kernel-only: a user process cannot
+ * name a block device or partition window, so bd/lba/nsect are
+ * forced to the memory-fs form.
+ */
+static long sys_mount(uint64_t ufstype, uint64_t upath)
+{
+    char ktype[16];
+    char kpath[VFS_PATH_MAX];
+    long nl;
+    int r;
+
+    if (!ufstype || !upath)
+        return -EINVAL;
+    nl = uacc_strnlen_user_cur((const void *)(uintptr_t)ufstype,
+                               sizeof(ktype) - 1);
+    if (nl <= 0)
+        return -EFAULT;
+    if (uacc_copy_in_cur(ktype, (const void *)(uintptr_t)ufstype,
+                         (size_t)nl))
+        return -EFAULT;
+    ktype[nl] = 0;
+
+    r = path_copy_in(upath, kpath);
+    if (r)
+        return r;
+
+    return vfs_mount(ktype, kpath, NULL, 0, 0);
+}
+
+static long sys_netinfo(uint64_t uents, uint64_t umax)
+{
+    struct netif_info kents[NETINFO_MAX];
+    unsigned total, n;
+
+    if (!uents || !umax)
+        return 0;
+
+    total = netif_count();
+    n = umax > NETINFO_MAX ? NETINFO_MAX : umax;
+    if (n > total)
+        n = total;
+
+    for (unsigned i = 0; i < n; i++) {
+        struct netif *nif = netif_at(i);
+
+        memset(&kents[i], 0, sizeof(kents[i]));
+        kstrlcpy(kents[i].name, nif->name ? nif->name : "?",
+                 sizeof(kents[i].name));
+        memcpy(kents[i].hwaddr, nif->hwaddr, sizeof(kents[i].hwaddr));
+        kents[i].up = nif->up ? 1 : 0;
+        kents[i].is_loopback = nif->is_loopback ? 1 : 0;
+        kents[i].ip = nif->ip_addr;
+        kents[i].netmask = nif->netmask;
+        kents[i].gw = nif->gw;
+        kents[i].mtu = nif->mtu;
+    }
+
+    if (n && uacc_copy_out_cur((void *)(uintptr_t)uents, kents,
+                               n * sizeof(kents[0])))
+        return -EFAULT;
+    return (long)n;
+}
+
+static long sys_battinfo(uint64_t uinfo)
+{
+    struct batt_info bi;
+    struct battery_state bs;
+    struct battery_provider *prov;
+
+    if (!uinfo)
+        return -EINVAL;
+
+    memset(&bi, 0, sizeof(bi));
+    prov = battery_active();
+    if (prov && battery_snapshot_get(&bs)) {
+        bi.present = bs.present ? 1 : 0;
+        bi.is_mock = prov->is_mock ? 1 : 0;
+        bi.percent = bs.percent;
+        bi.voltage_mv = bs.voltage_mv;
+        bi.current_ma = bs.current_ma;
+        bi.temp_deci_c = bs.temp_deci_c;
+    }
+
+    if (uacc_copy_out_cur((void *)(uintptr_t)uinfo, &bi, sizeof(bi)))
+        return -EFAULT;
+    return 0;
+}
+
+static long sys_gettime(void)
+{
+    return (long)time_wallclock_ns();
+}
+
+static long sys_settime(uint64_t epoch_ns)
+{
+    time_set_wallclock(epoch_ns);
+    return 0;
+}
+
+static long sys_devlist(uint64_t uents, uint64_t umax)
+{
+    struct dev_info kents[DEVLIST_MAX];
+    unsigned n;
+
+    if (!uents || !umax)
+        return 0;
+    n = device_info_fill(kents, umax > DEVLIST_MAX ? DEVLIST_MAX : umax);
+    if (n && uacc_copy_out_cur((void *)(uintptr_t)uents, kents,
+                               n * sizeof(kents[0])))
+        return -EFAULT;
+    return (long)n;
+}
+
+/* pthread-lite backend: fn in x0, stack top x1, arg x2 -> tid       */
+static long sys_clone(uint64_t fn, uint64_t usp, uint64_t arg)
+{
+    return proc_thread_create(fn, usp, arg);
+}
+
+/* thread-only; the leader must use SYS_exit                         */
+static long sys_thread_exit(void)
+{
+    proc_thread_exit();                 /* noreturn                    */
+}
+
+static long sys_poweroff(void)
+{
+    if (!psci_available())
+        return -ENODEV;
+    kprintf("[proc] pid %d requested poweroff\n",
+            proc_current() ? proc_current()->pid : -1);
+    psci_system_off();                  /* noreturn                    */
+}
+
+static long sys_reboot(void)
+{
+    if (!psci_available())
+        return -ENODEV;
+    kprintf("[proc] pid %d requested reboot\n",
+            proc_current() ? proc_current()->pid : -1);
+    psci_system_reset();                /* noreturn                    */
+}
+
 
 
 
@@ -1021,6 +1262,20 @@ static const sys_fn_t sys_table[] = {
     [SYS_send]       = (sys_fn_t)sys_send,
     [SYS_recv]       = (sys_fn_t)sys_recv,
     [SYS_select]     = (sys_fn_t)sys_select,
+    /* phase 14: userspace foundation */
+    [SYS_brk]        = (sys_fn_t)sys_brk,
+    [SYS_psinfo]     = (sys_fn_t)sys_psinfo,
+    [SYS_mountinfo]  = (sys_fn_t)sys_mountinfo,
+    [SYS_mount]      = (sys_fn_t)sys_mount,
+    [SYS_netinfo]    = (sys_fn_t)sys_netinfo,
+    [SYS_battinfo]   = (sys_fn_t)sys_battinfo,
+    [SYS_gettime]    = (sys_fn_t)sys_gettime,
+    [SYS_settime]    = (sys_fn_t)sys_settime,
+    [SYS_devlist]    = (sys_fn_t)sys_devlist,
+    [SYS_clone]      = (sys_fn_t)sys_clone,
+    [SYS_thread_exit] = (sys_fn_t)sys_thread_exit,
+    [SYS_poweroff]   = (sys_fn_t)sys_poweroff,
+    [SYS_reboot]     = (sys_fn_t)sys_reboot,
 };
 
 void syscall_dispatch(struct trap_frame *tf)

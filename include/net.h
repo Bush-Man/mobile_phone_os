@@ -91,6 +91,8 @@ struct netif *netif_default(void);
 struct netif *netif_find_name(const char *name);
 struct netif *netif_loopback(void);
 unsigned netif_count(void);
+/* registry-order accessor (phase 14 report path); NULL past the end */
+struct netif *netif_at(unsigned idx);
 
 /* route: loopback ip -> lo; local iface ip -> that iface; default */
 struct netif *netif_route(uint32_t dst_ip);

@@ -187,6 +187,10 @@ void proc_note_init_pid(int pid);
 /* the registered init proc, or NULL before it spawns */
 struct proc *proc_init_proc(void);
 
+/* phase 16: registry lookup by pid (zombies included); NULL if
+ * unknown -- the release selftest's W^X/ASLR probes use it         */
+struct proc *proc_by_pid(int pid);
+
 /* pid of the first live process named `name`, or -1 (selftests)   */
 int proc_pid_of_name(const char *name);
 

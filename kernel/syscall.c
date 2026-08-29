@@ -41,6 +41,7 @@
 #include "mm/vmm.h"
 #include "net.h"
 #include "panic.h"
+#include "perm.h"
 #include "proc.h"
 #include "psci.h"
 #include "signal.h"
@@ -509,12 +510,23 @@ struct fbio_info {
 static long fb0_ioctl(unsigned cmd, uint64_t arg)
 {
     const struct fb_canvas *cv = fb_active();
+    struct proc *p = proc_current();
     struct fbio_info info;
     struct fbio_fill fill;
     struct fbio_blit blit;
 
     if (!cv || !cv->frames)
         return -ENODEV;
+
+    /*
+     * Phase 16: presenting frames is a capability. The compositor
+     * (and the protocol battery) hold PERM_FB_PRESENT; a random
+     * app poking fb0 gets EPERM before it can paint a pixel.
+     */
+    if (cmd == FBIO_BLIT || cmd == FBIO_FILL) {
+        if (!p || !perm_has(p->name, PERM_FB_PRESENT))
+            return -EPERM;
+    }
 
     switch (cmd) {
     case FBIO_INFO:
@@ -934,6 +946,15 @@ static long sys_usock_serve(uint64_t upath)
         return -EFAULT;
     path[nl] = 0;
 
+    /*
+     * Phase 16: publishing a well-known service endpoint is a
+     * capability. The compositor is the only app allowed to own
+     * /var/run/ui; unknown apps get the default-deny EPERM.
+     */
+    if (!strncmp(path, "/var/run/ui", sizeof("/var/run/ui")) &&
+        !perm_has(p->name, PERM_UI_COMPOSE))
+        return -EPERM;
+
     if (usock_serve(path, &lf))
         return -EADDRINUSE;
     fd = fd_install_of(p, lf);
@@ -962,6 +983,18 @@ static long sys_usock_connect(uint64_t upath)
                          (size_t)nl))
         return -EFAULT;
     path[nl] = 0;
+
+    /*
+     * Phase 16: the two well-known service transports are gated by
+     * the per-app permission table -- a random app can neither
+     * drive the modem nor talk to the compositor protocol.
+     */
+    if (!strncmp(path, "/var/run/modem", sizeof("/var/run/modem")) &&
+        !perm_has(p->name, PERM_MODEM))
+        return -EPERM;
+    if (!strncmp(path, "/var/run/ui", sizeof("/var/run/ui")) &&
+        !perm_has(p->name, PERM_UI_COMPOSE))
+        return -EPERM;
 
     rc = usock_connect(path, &cf);
     if (rc)

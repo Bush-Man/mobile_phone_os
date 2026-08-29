@@ -168,7 +168,7 @@ and crasher programs (phase 14)".
 29. **`Makefile`** — libc_*.o pattern rule (-Iuserspace/libc/
     include), seven program rules linking crt0 first + libc objects
     + user.ld, builtin_imgs.o prerequisites extended, `make test`
-    phase argument 13 -> 14.
+      phase argument 13 -> 14.
 
 Commit: "Embed phase-14 programs and add libc build rules, bump
 test phase (phase 14)".

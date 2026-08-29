@@ -19,6 +19,7 @@
 #include "panic.h"
 #include "platform.h"
 #include "task.h"
+#include "watchdog.h"
 #include "time.h"
 
 static uint32_t counter_hz;             /* CNTFRQ_EL0                   */
@@ -143,6 +144,10 @@ static bool timer_tick(void *arg)
 
     /* quantum accounting + sleeper wakeups feed the scheduler */
     sched_tick();
+
+    /* phase 16: the watchdog deadline check rides the timer IRQ --
+     * it keeps beating even when the scheduler has wedged       */
+    watchdog_irq_tick();
 
     /* absolute re-arm: += period instead of now+period => zero drift */
     compare_write(compare_readback() + period_ticks);

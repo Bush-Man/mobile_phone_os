@@ -47,6 +47,7 @@
 #include "spinlock.h"
 #include "syscall.h"
 #include "task.h"
+#include "time.h"
 #include "uaccess.h"
 #include "vfs.h"
 
@@ -130,6 +131,31 @@ static spinlock_t proc_lock = SPINLOCK_INIT;
 static int next_pid = 1;
 
 static struct proc *init_proc;          /* orphan reaper (PID 1)       */
+
+/*
+ * Phase 16 (item 85): per-boot PRNG for user-VA randomization.
+ * Seeded from the architected counter + boot jiffies in
+ * proc_subsys_init -- neither is a secret, but together they make
+ * the layout unpredictable across reboots, which defeats the
+ * fixed-offset class of exploits on a phone.
+ */
+static uint64_t kaslr_seed;
+
+static uint64_t kaslr_next(void)
+{
+    kaslr_seed ^= kaslr_seed << 13;
+    kaslr_seed ^= kaslr_seed >> 7;
+    kaslr_seed ^= kaslr_seed << 17;
+    return kaslr_seed;
+}
+
+/* randomize the private-mmap window base (max ~4 GiB into the
+ * 512 GiB window; page-aligned)                                     */
+static vaddr_t kaslr_mmap_base(void)
+{
+    return USER_MMAP_BASE +
+           (vaddr_t)(kaslr_next() % 0x100000ull) * PAGE_SIZE;
+}
 
 static struct waitqueue reap_wq;        /* waitpid() sleepers          */
 
@@ -261,8 +287,16 @@ void proc_cpu_init(void)
 /* boot-cpu wrapper: applies the per-cpu config once, then reports */
 void proc_subsys_init(void)
 {
+    /* phase 16: seed the ASLR PRNG from two independent boot-time
+     * sources; the counter runs from power-on, jiffies from the
+     * first timer IRQs -- their low bits differ every boot       */
+    kaslr_seed = time_counter_value() ^ ((uint64_t)jiffies_read() << 32);
+    if (!kaslr_seed)
+        kaslr_seed = 0x9e3779b97f4a7c15ULL;
+
     proc_cpu_init();
     kprintf("proc: address spaces ready (ASIDs from TTBR0)\n");
+    kprintf("proc: user-VA randomization armed\n");
 }
 
 /* ---- context ---------------------------------------------------------------- */
@@ -558,6 +592,27 @@ void proc_note_init_pid(int pid)
 struct proc *proc_init_proc(void)
 {
     return init_proc;
+}
+
+/*
+ * Phase 16: registry lookup by pid for kernel-side probes (the
+ * release selftest walks a live process's page tables to audit W^X
+ * and read its randomized mmap base). Zombies qualify: their
+ * mappings are intact until the reaper runs. NULL when unknown.
+ */
+struct proc *proc_by_pid(int pid)
+{
+    daif_state s;
+    struct proc *found = NULL;
+
+    spin_lock_irqsave(&proc_lock, &s);
+    for (struct proc *it = proc_list; it; it = it->next_all)
+        if (it->pid == pid) {
+            found = it;
+            break;
+        }
+    spin_unlock_irqrestore(&proc_lock, s);
+    return found;
 }
 
 int proc_pid_of_name(const char *name)
@@ -948,7 +1003,7 @@ int proc_spawn(const char *img_name,
     }
     p->brk = brk;
     p->brk_floor = brk;                 /* phase 14: SYS_brk floor  */
-    p->mmap_next = USER_MMAP_BASE;      /* phase 8: mmap window       */
+    p->mmap_next = kaslr_mmap_base();   /* phase 16: ASLR'd mmap base */
 
     pid = pid_alloc();
     p->pid = pid;
@@ -1122,6 +1177,7 @@ long proc_do_exec(const char *name,
     p->asid_gen = ngen;
     p->brk = nbrk;
     p->brk_floor = nbrk;                 /* phase 14: heap floor    */
+    p->mmap_next = kaslr_mmap_base();    /* phase 16: fresh layout  */
 
     /* POSIX-lite: handlers and pending signals reset across exec   */
     memset(p->sig_handler, 0, sizeof(p->sig_handler));

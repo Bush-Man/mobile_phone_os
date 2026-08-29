@@ -11,6 +11,7 @@
 #include "irq.h"
 #include "battery.h"
 #include "audio.h"
+#include "watchdog.h"
 #include "modem.h"
 #include "net.h"
 #include "virtio.h"
@@ -23,6 +24,7 @@
 #include "panic.h"
 #include "platform.h"
 #include "proc.h"
+#include "psci.h"
 #include "smp.h"
 #include "task.h"
 #include "tasklet.h"
@@ -46,6 +48,7 @@ void phase12_init(const struct platform_info *plat);
 void phase13_init(const struct platform_info *plat);
 void phase14_init(const struct platform_info *plat);
 void phase15_init(const struct platform_info *plat);
+void phase16_init(const struct platform_info *plat);
 
 static void housekeeping_task(void *arg)
 {
@@ -55,6 +58,12 @@ static void housekeeping_task(void *arg)
 
     for (;;) {
         tasklet_drain();                /* bottom halves here       */
+
+        /*
+         * phase 16: the software watchdog heartbeat -- as long as
+         * this loop runs, the deadline keeps moving
+         */
+        watchdog_kick();
 
         /* phase 9: autorepeat engine runs off this cadence         */
         input_tick_repeats();
@@ -107,7 +116,11 @@ static void housekeeping_task(void *arg)
 
 extern const struct platform_info *smp_plat;
 
-#define BANNER "[OK] mobile_phone_os phase 15"
+#define BANNER "[OK] mobile_phone_os phase 16"
+
+/* phase 16 (item 88): boot-time measurement -- stamped right
+ * after time_init, reported just before the banner                 */
+static uint64_t boot_t0_ms;
 
 /*
  * Phase 5 milestone demo: spawn the built-in static "hello" ELF at
@@ -196,7 +209,17 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
     gic_init(&plat);
     kprintf("irq: GICv%d online\n", plat.gic_version);
 
+    /*
+     * phase 16 (item 85): re-randomize the stack-smashing guard
+     * from the architected counter. panic.c ships a fixed value so
+     * early boot is deterministic; once the counter runs, every
+     * boot gets a different guard.
+     */
+    __stack_chk_guard ^= time_counter_value();
+    __stack_chk_guard |= 1ull;
+
     time_init(&plat);
+    boot_t0_ms = time_uptime_ms();
     kprintf("time: %u Hz system counter, %u Hz tick (INTID %u)\n",
             time_counter_hz(), TIME_HZ, plat.timer_irq);
 
@@ -333,6 +356,20 @@ void kmain(uint64_t boot_el, uint64_t dtb_ptr)
      * (see docs/PHASE_15.md).
      */
     phase15_init(&plat);
+
+    /*
+     * Phase 16: hardening, packaging & release polish. The W^X and
+     * ASLR groundwork is live (proc.c/syscall.c/panic.c), the
+     * software watchdog is armed, and "reltest" drives the release
+     * battery: W^X probes, permission denials, kmsg persistence,
+     * the A/B slot manager with rollback, and the perf metrics
+     * (see docs/PHASE_16.md).
+     */
+    watchdog_init(&plat);
+    phase16_init(&plat);
+
+    kprintf("[perf] boot %llu ms\n",
+            (unsigned long long)(time_uptime_ms() - boot_t0_ms));
 
     kprintf("%s\n", BANNER);
 

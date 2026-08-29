@@ -8,21 +8,31 @@
 #include <stdarg.h>
 #include <stdint.h>
 
+#include "kmsg.h"
 #include "lib.h"
 #include "uart.h"
+
+/* phase 16: every byte the console emits also lands in the kmsg
+ * ring (include/kmsg.h). The writer is serialized by the UART tx
+ * lock (or runs in raw panic mode); the ring adds no locking.    */
+static void emit(char c)
+{
+    uart_putc(c);
+    kmsg_putc(c);
+}
 
 static void put_str(const char *s)
 {
     if (!s)
         s = "(null)";
     while (*s)
-        uart_putc(*s++);
+        emit(*s++);
 }
 
 static void put_pad(int width, int len, int zpad)
 {
     while (len++ < width)
-        uart_putc(zpad ? '0' : ' ');
+        emit(zpad ? '0' : ' ');
 }
 
 static void put_ull(unsigned long long v, unsigned base, int uppercase,
@@ -40,7 +50,7 @@ static void put_ull(unsigned long long v, unsigned base, int uppercase,
 
     put_pad(width, i, zpad);
     while (i--)
-        uart_putc(buf[i]);
+        emit(buf[i]);
 }
 
 static void put_ll(long long v, int width, int zpad)
@@ -49,7 +59,7 @@ static void put_ll(long long v, int width, int zpad)
                                      : (unsigned long long)v;
 
     if (v < 0)
-        uart_putc('-');
+        emit('-');
     put_ull(mag, 10, 0,
             v < 0 ? (width ? width - 1 : 0) : width, zpad);
 }
@@ -66,7 +76,7 @@ void kprintf(const char *fmt, ...)
         int lcount, width = 0, zpad = 0;
 
         if (*p != '%') {
-            uart_putc(*p);
+            emit(*p);
             continue;
         }
         p++;
@@ -86,7 +96,7 @@ void kprintf(const char *fmt, ...)
 
         switch (*p) {
         case 'c':
-            uart_putc((char)va_arg(ap, int));
+            emit((char)va_arg(ap, int));
             break;
         case 's':
             put_str(va_arg(ap, const char *));
@@ -123,11 +133,11 @@ void kprintf(const char *fmt, ...)
             break;
         }
         case '%':
-            uart_putc('%');
+            emit('%');
             break;
         default:
-            uart_putc('%');
-            uart_putc(*p);
+            emit('%');
+            emit(*p);
             break;
         }
     }

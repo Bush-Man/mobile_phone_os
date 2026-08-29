@@ -407,6 +407,27 @@ static long stack_setup(paddr_t root,
     uint64_t argv_vec[8];
     uint64_t envp_vec[4];
 
+    /*
+     * Map the full stack reservation first: uacc_copy_out below
+     * validates against the root's page tables, so nothing can be
+     * written until the pages exist. RW+X on purpose -- the signal
+     * trampoline (kernel/signal.c) executes from the user stack.
+     * Teardown is free: the pages live under root's L0 indices and
+     * vmm_root_release() reclaims them with the rest of the space.
+     */
+    for (uint64_t sva = USER_STACK_TOP - USER_STACK_SIZE;
+         sva < USER_STACK_TOP; sva += PAGE_SIZE) {
+        paddr_t fr = pmm_alloc();
+
+        if (!fr)
+            return -ENOMEM;             /* root teardown unwinds us */
+        if (vmm_map_at(root, sva, fr,
+                       VM_READ | VM_WRITE | VM_EXEC | VM_USER)) {
+            pmm_free(fr);
+            return -ENOMEM;
+        }
+    }
+
     while (argv && argv[argc] && argc < 8) {
         str_bytes += p_strlen(argv[argc]) + 1;
         argc++;

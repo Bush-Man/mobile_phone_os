@@ -99,40 +99,40 @@ $(BUILD)/libc_%.o: userspace/libc/%.c
 	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include -c $< -o $@
 
 userspace/init: userspace/init.c $(LIBC_OBJS) userspace/libc/user.ld
-	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	$(CC) $(USER_CFLAGS) -no-pie -Iuserspace/libc/include \
 	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
 	    $(LIBC_OBJS)
 
 userspace/sh: userspace/sh.c $(LIBC_OBJS) userspace/libc/user.ld
-	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	$(CC) $(USER_CFLAGS) -no-pie -Iuserspace/libc/include \
 	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
 	    $(LIBC_OBJS)
 
 userspace/batteryd: userspace/batteryd.c $(LIBC_OBJS) \
                     userspace/libc/user.ld
-	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	$(CC) $(USER_CFLAGS) -no-pie -Iuserspace/libc/include \
 	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
 	    $(LIBC_OBJS)
 
 userspace/udevd: userspace/udevd.c $(LIBC_OBJS) userspace/libc/user.ld
-	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	$(CC) $(USER_CFLAGS) -no-pie -Iuserspace/libc/include \
 	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
 	    $(LIBC_OBJS)
 
 userspace/timed: userspace/timed.c $(LIBC_OBJS) userspace/libc/user.ld
-	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	$(CC) $(USER_CFLAGS) -no-pie -Iuserspace/libc/include \
 	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
 	    $(LIBC_OBJS)
 
 userspace/libctest: userspace/libctest.c $(LIBC_OBJS) \
                     userspace/libc/user.ld
-	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	$(CC) $(USER_CFLAGS) -no-pie -Iuserspace/libc/include \
 	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
 	    $(LIBC_OBJS)
 
 userspace/crasher: userspace/crasher.c $(LIBC_OBJS) \
                    userspace/libc/user.ld
-	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include \
+	$(CC) $(USER_CFLAGS) -no-pie -Iuserspace/libc/include \
 	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
 	    $(LIBC_OBJS)
 
@@ -162,7 +162,7 @@ UI_PROGS := compositor dialer msgs contacts clock calc settings \
 # inside that directory, so only the program rule needs the flag).
 $(UI_PROGS:%=userspace/%): userspace/%: userspace/%.c $(LIBC_OBJS) \
                            $(UI_LIB_OBJS) userspace/libc/user.ld
-	$(CC) $(USER_CFLAGS) -Iuserspace/libc/include -Iinclude \
+	$(CC) $(USER_CFLAGS) -no-pie -Iuserspace/libc/include -Iinclude \
 	    -Iuserspace/ui \
 	    -T userspace/libc/user.ld -Wl,--build-id=none -o $@ $< \
 	    $(LIBC_OBJS) $(UI_LIB_OBJS)

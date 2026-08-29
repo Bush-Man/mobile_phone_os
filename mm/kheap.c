@@ -27,6 +27,7 @@
 #include "mm/pmm.h"
 #include "mm/types.h"
 #include "panic.h"
+#include "spinlock.h"
 
 #ifndef KHEAP_DEBUG
 #define KHEAP_DEBUG 1
@@ -56,6 +57,14 @@ static const uint16_t class_size[KM_CLASSES] = {
 
 /* freelists 0..KM_CLASSES-1: slab classes; KM_CLASSES: large spans */
 static vaddr_t freelist[KM_CLASSES + 1];
+
+/*
+ * The allocator state (freelists, chunk headers, stats, the recent
+ * ring) is shared by every cpu: kmalloc/kfree must serialize, and
+ * IRQs must be masked while the lock is held (timer/tasklet paths
+ * allocate too).
+ */
+static spinlock_t kheap_lock = SPINLOCK_INIT;
 
 static struct kheap_stats kstats;
 
@@ -96,6 +105,7 @@ void *kmalloc(size_t size)
 {
     unsigned ci, i;
     void *body;
+    daif_state s;
 
     if (!size)
         size = 1;
@@ -104,24 +114,33 @@ void *kmalloc(size_t size)
         if (size + 4 <= (unsigned)class_size[ci])
             break;
 
+    spin_lock_irqsave(&kheap_lock, &s);
+
     if (ci == KM_CLASSES) {
         /* large path: dedicated span, pages tracked for free() */
         unsigned pages = (unsigned)((HDR_SIZE + size + PAGE_SIZE - 1) >>
                                     PAGE_SHIFT);
-        unsigned k;
-        paddr_t span[KM_LARGE_MAX / PAGE_SIZE];
+        paddr_t span;
 
-        if (pages > KM_LARGE_MAX / PAGE_SIZE)
+        if (pages > KM_LARGE_MAX / PAGE_SIZE) {
+            spin_unlock_irqrestore(&kheap_lock, s);
             return NULL;
+        }
 
-        for (k = 0; k < pages; k++) {
-            span[k] = pmm_alloc();
-            if (!span[k])
-                return NULL;
+        /*
+         * One PHYSICALLY CONTIGUOUS span: the identity map (VA==PA)
+         * means the caller addresses the whole allocation as a
+         * single buffer, so page-by-page pmm_alloc() would scatter
+         * it across unrelated frames and corrupt whoever owns them.
+         */
+        span = pmm_alloc_contig(pages);
+        if (!span) {
+            spin_unlock_irqrestore(&kheap_lock, s);
+            return NULL;
         }
 
         /* header lives INSIDE the span, at its very start */
-        body = (void *)((uint8_t *)span[0] + HDR_SIZE);
+        body = (void *)((uint8_t *)span + HDR_SIZE);
         {
             struct chunk_hdr *h = hdr_of(body);
 
@@ -141,11 +160,14 @@ void *kmalloc(size_t size)
         kstats.bytes_current += size;
         if (kstats.bytes_current > kstats.bytes_peak)
             kstats.bytes_peak = kstats.bytes_current;
+        spin_unlock_irqrestore(&kheap_lock, s);
         return body;
     }
 
-    if (!freelist[ci] && !grow_slab(ci))
+    if (!freelist[ci] && !grow_slab(ci)) {
+        spin_unlock_irqrestore(&kheap_lock, s);
         return NULL;
+    }
 
     body = (void *)freelist[ci];
     freelist[ci] = *(vaddr_t *)body;
@@ -176,6 +198,8 @@ void *kmalloc(size_t size)
     kstats.bytes_current += size;
     if (kstats.bytes_current > kstats.bytes_peak)
         kstats.bytes_peak = kstats.bytes_current;
+
+    spin_unlock_irqrestore(&kheap_lock, s);
     return body;
 }
 
@@ -191,9 +215,12 @@ void *kzalloc(size_t size)
 void kfree(void *ptr)
 {
     struct chunk_hdr *h;
+    daif_state s;
 
     if (!ptr)
         panic("kfree(NULL)");
+
+    spin_lock_irqsave(&kheap_lock, &s);
 
     h = hdr_of(ptr);
 
@@ -241,6 +268,7 @@ void kfree(void *ptr)
         h->magic = HDR_MAGIC_FREED;
         *(vaddr_t *)ptr = freelist[ci];
         freelist[ci] = (vaddr_t)ptr;
+        spin_unlock_irqrestore(&kheap_lock, s);
         return;
     }
 
@@ -252,6 +280,8 @@ void kfree(void *ptr)
         for (pg = 0; pg < h->npages; pg++)
             pmm_free(pa + ((paddr_t)pg << PAGE_SHIFT));
     }
+
+    spin_unlock_irqrestore(&kheap_lock, s);
 }
 
 void kheap_stats_get(struct kheap_stats *out)

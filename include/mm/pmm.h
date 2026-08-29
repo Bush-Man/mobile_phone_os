@@ -17,6 +17,7 @@ struct pmm_stats {
  */
 void         pmm_init(paddr_t ram_base, uint64_t ram_size);
 paddr_t      pmm_alloc(void);
+paddr_t      pmm_alloc_contig(unsigned npages);
 void         pmm_free(paddr_t pa);
 void         pmm_stats_get(struct pmm_stats *out);
 

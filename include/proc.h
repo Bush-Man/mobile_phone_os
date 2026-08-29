@@ -85,6 +85,9 @@ struct proc {
 
     /* heap top for SYS_brk (page above the highest loaded byte)   */
     vaddr_t      brk;
+    /* phase 14: heap floor (image end) -- SYS_brk may shrink down
+     * to this but never below, so malloc's arena stays sane       */
+    vaddr_t      brk_floor;
 
     /* phase 8: next free VA for SYS_mmap private mappings          */
     vaddr_t      mmap_next;
@@ -168,5 +171,58 @@ void proc_user_fault(struct trap_frame *tf, uint64_t esr, uint64_t far)
 
 /* pending-signal delivery right before returning to EL0 */
 void signal_deliver_pending(struct trap_frame *tf);
+
+/* ---- phase 14: init, orphans, threads ------------------------------------- */
+
+/*
+ * Mark the process that owns `pid` as the reaper of orphans (init,
+ * PID 1). From then on, every dying process reparents its children
+ * to init so their zombies stay reapable -- without this, children
+ * of a dead parent would hold a dangling parent pointer forever.
+ */
+void proc_note_init_pid(int pid);
+
+/* the registered init proc, or NULL before it spawns */
+struct proc *proc_init_proc(void);
+
+/* pid of the first live process named `name`, or -1 (selftests)   */
+int proc_pid_of_name(const char *name);
+
+/*
+ * Phase 14: fill `max` usabi.h psinfo records from the proc registry
+ * (zombies included, flagged PSINFO_ZOMBIE). Returns entries written.
+ * Backs SYS_psinfo.
+ */
+struct psinfo_entry;
+unsigned proc_psinfo_fill(struct psinfo_entry *ents, unsigned max);
+
+/*
+ * Kernel-context reap by pid: used by the phase-14 selftest and the
+ * process demo, which run as kernel tasks (no proc => no waitpid).
+ * Returns the pid and exit code once the process is a zombie and
+ * fully parked, 0 while it is still alive, -ECHILD when no such
+ * process exists. Safe to call from task context only.
+ */
+int proc_kernel_reap(int pid, int *code_out);
+
+/*
+ * Threads within a process (pthread-lite backend). The new thread
+ * runs at `pc` on its own user stack top `usp` with x0 = `arg`; its
+ * task slot carries a dedicated kmalloc'd EL1 stack. Returns the
+ * tid (task slot index) or a negative errno.
+ */
+int  proc_thread_create(uint64_t pc, uint64_t usp, uint64_t arg);
+
+/* park the CALLING thread's task (leader must use proc_do_exit)   */
+void proc_thread_exit(void) __attribute__((noreturn));
+
+/*
+ * Reclaim DEAD-and-parked thread slots (frees their kstacks, frees
+ * the task slots). Global sweep, safe from any task context: only
+ * slots whose scheduler handshake marked them parked are touched,
+ * so a thread mid-park is never disturbed. Called from housekeeping
+ * and from SYS_thread_exit.
+ */
+void proc_threads_reclaim(void);
 
 #endif /* PROC_H */

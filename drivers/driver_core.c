@@ -19,6 +19,7 @@
 #include "irq.h"
 #include "lib.h"
 #include "mm/kheap.h"
+#include "usabi.h"
 
 /* ---- local string helpers (freestanding) ---------------------------------- */
 
@@ -192,6 +193,39 @@ int device_probe_all(void)
             if (dev->state == DEV_UNBOUND && device_probe_one(dev) == 0)
                 bound++;
     return bound;
+}
+
+/*
+ * Phase 14: fill up to `max` device records (usabi.h layout) for the
+ * SYS_devlist report. Registration order per bus, buses in registry
+ * order -- the same order device_dump prints. drv is the bound
+ * driver's name, or "" while unbound. No lock: like device_dump,
+ * this reads registries that only boot-time probing mutates.
+ */
+unsigned device_info_fill(struct dev_info *ents, unsigned max)
+{
+    unsigned out = 0;
+
+    if (!ents)
+        return 0;
+
+    for (unsigned b = 0; b < nbuses && out < max; b++) {
+        for (struct device *dev = buses[b]->devices;
+             dev && out < max; dev = dev->next) {
+            memset(ents[out].name, 0, sizeof(ents[out].name));
+            kstrlcpy(ents[out].name,
+                     dev->name ? dev->name : "?",
+                     sizeof(ents[out].name));
+            memset(ents[out].drv, 0, sizeof(ents[out].drv));
+            if (dev->drv && dev->drv->name)
+                kstrlcpy(ents[out].drv, dev->drv->name,
+                         sizeof(ents[out].drv));
+            ents[out].state = (uint8_t)dev->state;
+            ents[out].pad[0] = ents[out].pad[1] = ents[out].pad[2] = 0;
+            out++;
+        }
+    }
+    return out;
 }
 
 void device_dump(void)

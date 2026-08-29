@@ -100,6 +100,10 @@ bool driver_match(const struct driver *drv, const struct device *dev);
 int  device_probe_all(void);                /* attach every unbound dev  */
 int  device_probe_one(struct device *dev);  /* single-device attach      */
 
+/* phase 14: SYS_devlist snapshot into usabi.h records               */
+struct dev_info;
+unsigned device_info_fill(struct dev_info *ents, unsigned max);
+
 /* ---- FDT enumeration ------------------------------------------------------- */
 
 struct fdt;

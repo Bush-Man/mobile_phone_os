@@ -32,6 +32,7 @@
 #include "syscall.h"
 #include "task.h"
 #include "tty.h"
+#include "usabi.h"
 #include "vfs.h"
 
 struct fs_type {
@@ -228,6 +229,43 @@ unsigned vfs_mount_count(void)
     return nmounts;
 }
 
+unsigned vfs_mount_count(void)
+{
+    return nmounts;
+}
+
+/*
+ * Phase 14: fill up to `max` mountinfo records (usabi.h layout) for
+ * the SYS_mountinfo report. Returns the number of entries written.
+ * Snapshot runs under the registry lock, so an active mount never
+ * appears half-copied.
+ */
+unsigned vfs_mountinfo_fill(struct mountinfo_entry *ents, unsigned max)
+{
+    daif_state s;
+    unsigned out = 0;
+
+    if (!ents)
+        return 0;
+
+    vlock(&s);
+    for (unsigned i = 0; i < nmounts && out < max; i++) {
+        if (!mounts[i].active)
+            continue;
+
+        memset(ents[out].fstype, 0, sizeof(ents[out].fstype));
+        kstrlcpy(ents[out].fstype,
+                 mounts[i].fstype ? mounts[i].fstype : "?",
+                 sizeof(ents[out].fstype));
+        memset(ents[out].path, 0, sizeof(ents[out].path));
+        kstrlcpy(ents[out].path, mounts[i].path, sizeof(ents[out].path));
+        out++;
+    }
+    vunlock(s);
+    return out;
+}
+
+bool vfs_path_is_mounted(const char *path)
 bool vfs_path_is_mounted(const char *path)
 {
     daif_state s;

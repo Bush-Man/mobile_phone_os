@@ -197,6 +197,10 @@ struct vnode *vfs_root(void);               /* namespace root, ref'd  */
 bool vfs_path_is_mounted(const char *path); /* debug/report helper    */
 unsigned vfs_mount_count(void);
 
+/* phase 14: SYS_mountinfo snapshot into usabi.h records            */
+struct mountinfo_entry;
+unsigned vfs_mountinfo_fill(struct mountinfo_entry *ents, unsigned max);
+
 /* ---- path resolution ------------------------------------------------------ */
 
 /*

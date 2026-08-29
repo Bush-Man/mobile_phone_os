@@ -30,9 +30,11 @@
 #include <stdbool.h>
 
 #include "cpu.h"
+#include "crash.h"
 #include "elf.h"
 #include "exceptions.h"
 #include "ipc.h"
+#include "usabi.h"
 #include "irq.h"
 #include "lib.h"
 #include "mm/kheap.h"
@@ -57,6 +59,21 @@ extern const uint8_t builtin_evreader_start[];
 extern const uint8_t builtin_evreader_end[];
 extern const uint8_t builtin_netcli_start[];
 extern const uint8_t builtin_netcli_end[];
+/* phase 14: userspace foundation */
+extern const uint8_t builtin_init_start[];
+extern const uint8_t builtin_init_end[];
+extern const uint8_t builtin_sh_start[];
+extern const uint8_t builtin_sh_end[];
+extern const uint8_t builtin_batteryd_start[];
+extern const uint8_t builtin_batteryd_end[];
+extern const uint8_t builtin_udevd_start[];
+extern const uint8_t builtin_udevd_end[];
+extern const uint8_t builtin_timed_start[];
+extern const uint8_t builtin_timed_end[];
+extern const uint8_t builtin_libctest_start[];
+extern const uint8_t builtin_libctest_end[];
+extern const uint8_t builtin_crasher_start[];
+extern const uint8_t builtin_crasher_end[];
 
 struct builtin_image {
     const char  *name;
@@ -69,6 +86,14 @@ static const struct builtin_image builtins[] = {
     { "ipcdemo", builtin_ipcdemo_start, builtin_ipcdemo_end },
     { "evreader", builtin_evreader_start, builtin_evreader_end },
     { "netcli", builtin_netcli_start, builtin_netcli_end },
+    /* phase 14: libc-linked programs (crt0 + userspace/libc)      */
+    { "init", builtin_init_start, builtin_init_end },
+    { "sh", builtin_sh_start, builtin_sh_end },
+    { "batteryd", builtin_batteryd_start, builtin_batteryd_end },
+    { "udevd", builtin_udevd_start, builtin_udevd_end },
+    { "timed", builtin_timed_start, builtin_timed_end },
+    { "libctest", builtin_libctest_start, builtin_libctest_end },
+    { "crasher", builtin_crasher_start, builtin_crasher_end },
 };
 
 #define PROC_PRIO 10
@@ -76,6 +101,8 @@ static const struct builtin_image builtins[] = {
 static struct proc *proc_list;          /* every live proc struct      */
 static spinlock_t proc_lock = SPINLOCK_INIT;
 static int next_pid = 1;
+
+static struct proc *init_proc;          /* orphan reaper (PID 1)       */
 
 static struct waitqueue reap_wq;        /* waitpid() sleepers          */
 
@@ -478,6 +505,100 @@ static void fork_child_body(void *raw)
     proc_enter_user(tf);                /* returns to fork's caller!  */
 }
 
+/* ---- init / orphan reparenting (phase 14) --------------------------------- */
+
+void proc_note_init_pid(int pid)
+{
+    daif_state s;
+    struct proc *found = NULL;
+
+    spin_lock_irqsave(&proc_lock, &s);
+    for (struct proc *it = proc_list; it; it = it->next_all)
+        if (it->pid == pid && it->alive) {
+            found = it;
+            break;
+        }
+    spin_unlock_irqrestore(&proc_lock, s);
+
+    if (found) {
+        init_proc = found;
+        kprintf("[proc] init is pid %d (orphan reaper)\n", pid);
+    } else {
+        kprintf("[proc] init registration failed (pid %d)\n", pid);
+    }
+}
+
+struct proc *proc_init_proc(void)
+{
+    return init_proc;
+}
+
+int proc_pid_of_name(const char *name)
+{
+    daif_state s;
+    int pid = -1;
+
+    spin_lock_irqsave(&proc_lock, &s);
+    for (struct proc *it = proc_list; it; it = it->next_all) {
+        if (it->alive && p_streq(it->name, name)) {
+            pid = it->pid;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&proc_lock, s);
+    return pid;
+}
+
+/*
+ * Phase 14: fill up to `max` psinfo records (usabi.h layout) for the
+ * SYS_psinfo report -- every proc in the registry, zombies included
+ * (flagged PSINFO_ZOMBIE, so `ps` can show "Z <defunct>" entries
+ * that have not been reaped yet). Kernel threads never appear: they
+ * have no proc struct. Oldest-first, pid order == spawn order.
+ */
+unsigned proc_psinfo_fill(struct psinfo_entry *ents, unsigned max)
+{
+    daif_state s;
+    unsigned out = 0;
+
+    if (!ents)
+        return 0;
+
+    spin_lock_irqsave(&proc_lock, &s);
+    for (struct proc *it = proc_list; it && out < max; it = it->next_all) {
+        ents[out].pid = (uint32_t)it->pid;
+        ents[out].ppid = (it->parent && it->parent->alive)
+                             ? (uint32_t)it->parent->pid : 0u;
+        ents[out].flags = it->alive ? PSINFO_ALIVE : PSINFO_ZOMBIE;
+        memset(ents[out].name, 0, sizeof(ents[out].name));
+        kstrlcpy(ents[out].name, it->name, sizeof(ents[out].name));
+        out++;
+    }
+    spin_unlock_irqrestore(&proc_lock, s);
+    return out;
+}
+
+/*
+ * Children of the dying `p` move to init so their zombies stay
+ * reapable. Children whose new parent is init get SIGCHLD armed on
+ * init's pending mask: the kernel has no waitpid-any notification
+ * hook yet, so this is the wake-up nudge that tells init a child of
+ * ANY kind changed state (its own or adopted). Called with
+ * proc_lock held.
+ */
+static void reparent_children_locked(struct proc *p)
+{
+    if (!init_proc || init_proc == p)
+        return;
+
+    for (struct proc *it = proc_list; it; it = it->next_all) {
+        if (it->parent == p && it != p) {
+            it->parent = init_proc;
+            init_proc->sig_pending |= (1u << (SIGCHLD - 1));
+        }
+    }
+}
+
 /* ---- zombie / reap ------------------------------------------------------------- */
 
 /*
@@ -498,16 +619,43 @@ static void mark_zombie(struct proc *p, int code, const char *why)
 
     p->alive = false;
     p->exit_code = code;
+
+    {
+        daif_state sl;
+
+        spin_lock_irqsave(&proc_lock, &sl);
+        reparent_children_locked(p);
+        spin_unlock_irqrestore(&proc_lock, sl);
+    }
+
     asid_release(p->asid);
     p->asid = KERNEL_ASID;
 
+    /*
+     * Phase 14: the process died -- its THREADS die with it. Marking
+     * them DEAD stops dispatch immediately; ones currently running
+     * on another cpu stop at their next park (wakers and the irq
+     * return path now refuse to re-queue DEAD tasks). Their slots
+     * are reclaimed later by proc_threads_reclaim().
+     */
     spin_lock_irqsave(&task_state_lock, &s);
     if (p->task && p->task->state != TASK_UNUSED)
         p->task->state = TASK_DEAD;
+    for (int i = 0; i < MAX_TASKS; i++) {
+        struct task *t = &tasks[i];
+
+        if (t->t_kstack && t->proc == p && t != p->task &&
+            t->state != TASK_UNUSED)
+            t->state = TASK_DEAD;
+    }
     spin_unlock_irqrestore(&task_state_lock, s);
 
     kprintf("[proc] pid %d (%s) %s, code %d\n",
             p->pid, p->name, why, code);
+
+    /* phase 14: persist the crash record before the space is gone */
+    if (p_streq(why, "faulted") || p_streq(why, "killed by signal"))
+        crash_record(p, code, why);
 
     wait_wake_all(&reap_wq);
 }
@@ -574,6 +722,25 @@ static bool reap_one(struct proc *zombie, int *code_out, int *pid_out)
     return true;
 }
 
+/*
+ * Phase 14: a threaded process is only reapable once every one of
+ * its threads is DEAD *and parked* (context quiescent) -- reap_one
+ * destroys the address space, and a still-running thread would be
+ * executing on freed page tables. The predicate is monotone thanks
+ * to the no-resurrection wakers: once true it stays true.
+ */
+static bool threads_settled(const struct proc *p)
+{
+    for (int i = 0; i < MAX_TASKS; i++) {
+        const struct task *t = &tasks[i];
+
+        if (t->t_kstack && t->proc == p &&
+            !(t->state == TASK_DEAD && t->parked))
+            return false;
+    }
+    return true;
+}
+
 /* find next reapable child of `parent` matching want (-1 = any) */
 static struct proc *find_zombie(struct proc *parent, int want)
 {
@@ -585,6 +752,8 @@ static struct proc *find_zombie(struct proc *parent, int want)
             continue;
         if (want >= 0 && it->pid != want)
             continue;
+        if (!threads_settled(it))
+            continue;               /* threads still draining      */
         spin_unlock_irqrestore(&proc_lock, s);
         return it;
     }
@@ -625,6 +794,41 @@ int proc_poll_reap(int want, int *code_out, int *pid_out)
         return pid;
     }
     return has_child(p, want) ? 0 : -ECHILD;
+}
+
+/*
+ * Phase 14: reap by pid from KERNEL context (selftest/demo tasks
+ * have no proc of their own). The safety argument mirrors reap_one:
+ * ->alive is already false, so nobody else can be reaping this
+ * zombie; the DEAD-marked task slot is only freed once its context
+ * is fully parked, which mark_zombie's TASK_DEAD marking plus the
+ * dying task's own task_exit() handshake guarantee.
+ */
+int proc_kernel_reap(int pid, int *code_out)
+{
+    struct proc *z = NULL;
+    daif_state s;
+
+    spin_lock_irqsave(&proc_lock, &s);
+    for (struct proc *it = proc_list; it; it = it->next_all) {
+        if (it->pid == pid) {
+            if (it->alive) {
+                spin_unlock_irqrestore(&proc_lock, s);
+                return 0;               /* still running            */
+            }
+            z = it;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&proc_lock, s);
+
+    if (!z)
+        return -ECHILD;
+    if (!threads_settled(z))
+        return 0;                       /* threads still draining    */
+
+    reap_one(z, code_out, NULL);
+    return pid;
 }
 
 /* predicate for wait_sleep_when: some child is reapable */
@@ -716,6 +920,7 @@ int proc_spawn(const char *img_name,
         return (int)r;
     }
     p->brk = brk;
+    p->brk_floor = brk;                 /* phase 14: SYS_brk floor  */
     p->mmap_next = USER_MMAP_BASE;      /* phase 8: mmap window       */
 
     pid = pid_alloc();
@@ -738,7 +943,13 @@ int proc_spawn(const char *img_name,
         return (int)r;
     }
 
-    slot = task_create(img_name, proc_task_body, p, PROC_PRIO);
+    /*
+     * Phase 14: reserve the task slot while it stays invisible to
+     * the scheduler, link ->proc / ->task, THEN publish it READY --
+     * a cross-cpu dispatch of an unlinked slot would otherwise run
+     * on the wrong address space.
+     */
+    slot = task_create_deferred(img_name, proc_task_body, p, PROC_PRIO);
     if (slot < 0) {
         vfs_proc_fds_release(p);
         space_destroy(p);
@@ -747,7 +958,9 @@ int proc_spawn(const char *img_name,
         return -EAGAIN;
     }
     p->task = &tasks[slot];
+    p->task->name = p->name;            /* stable name for psinfo  */
     registry_add(p);
+    task_launch(slot);
 
     kprintf("[proc] spawned \"%s\" pid %d asid %u root %llx\n",
             p->name, p->pid, p->asid,
@@ -798,6 +1011,7 @@ int proc_do_fork(struct trap_frame *tf)
     child->sig_pending = 0;             /* pending is NOT inherited   */
     child->in_signal = false;
     child->brk = parent->brk;
+    child->brk_floor = parent->brk_floor;   /* phase 14: heap floor  */
     child->mmap_next = parent->mmap_next;   /* private maps inherit */
 
     /* phase 7: fork shares open file descriptions (dup refs)       */
@@ -807,7 +1021,9 @@ int proc_do_fork(struct trap_frame *tf)
     memcpy(&child->entry_tf, tf, sizeof(*tf));
     child->entry_tf.regs[0] = 0;
 
-    slot = task_create(child->name, fork_child_body, child, PROC_PRIO);
+    /* phase 14: deferred-create + launch (same race argument)      */
+    slot = task_create_deferred(child->name, fork_child_body, child,
+                                PROC_PRIO);
     if (slot < 0) {
         space_destroy(child);
         kfree(child->kstack);
@@ -815,7 +1031,9 @@ int proc_do_fork(struct trap_frame *tf)
         return -EAGAIN;
     }
     child->task = &tasks[slot];
+    child->task->name = child->name;    /* stable name for psinfo  */
     registry_add(child);
+    task_launch(slot);
 
     kprintf("[proc] fork: pid %d -> pid %d\n",
             parent->pid, child->pid);
@@ -840,6 +1058,20 @@ long proc_do_exec(const char *name,
     if (!bi)
         return -ENOENT;
 
+    /*
+     * Phase 14: exec replaces the address space while the caller's
+     * THREADS would still be running on it. pthread-lite programs
+     * simply do not exec while threaded (the libc never does);
+     * refusing is cheaper and safer than cross-cpu thread surgery.
+     */
+    for (int i = 0; i < MAX_TASKS; i++) {
+        struct task *t = &tasks[i];
+
+        if (t->t_kstack && t->proc == p && t != p->task &&
+            t->state != TASK_UNUSED && t->state != TASK_DEAD)
+            return -EBUSY;
+    }
+
     nroot = vmm_root_alloc();
     if (!nroot)
         return -ENOMEM;
@@ -862,6 +1094,7 @@ long proc_do_exec(const char *name,
     p->asid = nasid;
     p->asid_gen = ngen;
     p->brk = nbrk;
+    p->brk_floor = nbrk;                 /* phase 14: heap floor    */
 
     /* POSIX-lite: handlers and pending signals reset across exec   */
     memset(p->sig_handler, 0, sizeof(p->sig_handler));
@@ -914,6 +1147,143 @@ int proc_do_kill(int pid, unsigned sig)
     spin_unlock_irqrestore(&proc_lock, s);
 
     return target ? (target->alive ? 0 : -ESRCH) : -ESRCH;
+}
+
+/* ---- threads (pthread-lite backend, phase 14) ------------------------------ */
+
+/*
+ * Thread body: runs on the thread's dedicated kstack; first entry
+ * into user mode goes through the standard proc_enter_user with the
+ * pc/usp/arg frame built below (SPSR EL0t). From then on the thread
+ * is an ordinary user task that happens to share the leader's proc
+ * (and therefore its address space, fd table and pid).
+ */
+static void thread_body(void *raw)
+{
+    struct task *t = raw;
+
+    if (t->proc != proc_current())
+        panic("thread: slot/proc mismatch at entry");
+
+    proc_address_space_switch(t->proc);
+
+    /*
+     * The entry frame was written onto this thread's kstack by
+     * proc_thread_create before the launch -- nothing races us to
+     * that stack, it belongs to this thread alone. Install it and
+     * drop into EL0.
+     */
+    proc_enter_user(kstack_frame_thread(t));
+}
+
+/* frame base for a fresh EL1 frame on a THREAD's own kstack */
+static struct trap_frame *kstack_frame_thread(struct task *t)
+{
+    uintptr_t top = ALIGN_UP((uintptr_t)t->t_kstack + PROC_KSTACK, 16);
+
+    return (struct trap_frame *)(top - sizeof(struct trap_frame));
+}
+
+int proc_thread_create(uint64_t pc, uint64_t usp, uint64_t arg)
+{
+    struct proc *p = proc_current();
+    struct task *t;
+    struct trap_frame *tf;
+    int slot;
+
+    if (!p || !p->alive)
+        return -EINVAL;
+
+    /*
+     * The user stack must already be mapped by the caller (pthread
+     * allocates it through mmap). No kernel validation of usp/pc:
+     * they are plain user addresses the thread faults on if wrong
+     * (handled like any other user fault).
+     */
+    slot = task_create_deferred(p->name, thread_body, NULL, PROC_PRIO);
+    if (slot < 0)
+        return -EAGAIN;
+
+    t = &tasks[slot];
+    t->t_kstack = kmalloc(PROC_KSTACK);
+    if (!t->t_kstack) {
+        daif_state s;
+
+        spin_lock_irqsave(&task_state_lock, &s);
+        t->state = TASK_UNUSED;         /* hand the slot back      */
+        t->fn = NULL;
+        t->arg = NULL;
+        spin_unlock_irqrestore(&task_state_lock, s);
+        return -ENOMEM;
+    }
+
+    t->proc = p;                        /* SHARES the leader's proc  */
+    t->arg = t;                         /* thread_body deref's this  */
+    t->name = "thread";                 /* stable rodata label       */
+
+    /*
+     * Build the first EL0 frame at the top of the thread's kstack;
+     * thread_body passes this exact address to proc_enter_user.
+     */
+    tf = kstack_frame_thread(t);
+    memset(tf, 0, sizeof(*tf));
+    tf->regs[0] = arg;
+    tf->regs[30] = 0;
+    tf->sp = usp;
+    tf->elr = pc;
+    tf->spsr = 0;                       /* EL0t                       */
+
+    task_launch(slot);
+
+    kprintf("[proc] pid %d thread tid %d @%llx\n",
+            p->pid, slot, (unsigned long long)pc);
+    return slot;
+}
+
+void proc_thread_exit(void)
+{
+    struct task *t = current_task();
+
+    if (!t || !t->t_kstack)
+        panic("thread_exit outside a process thread");
+
+    proc_address_space_switch(NULL);    /* stop touching user space  */
+    proc_threads_reclaim();             /* peers' slots, not ours    */
+    task_exit();                        /* parks; reclaim comes later */
+}
+
+void proc_threads_reclaim(void)
+{
+    bool freed = false;
+
+    for (int i = 0; i < MAX_TASKS; i++) {
+        struct task *t = &tasks[i];
+        daif_state s;
+
+        if (!t->t_kstack || t->state != TASK_DEAD || !t->parked)
+            continue;                   /* live, or not yet quiescent */
+
+        spin_lock_irqsave(&task_state_lock, &s);
+        t->state = TASK_UNUSED;
+        t->proc = NULL;
+        t->fn = NULL;
+        t->arg = NULL;
+        t->parked = false;
+        spin_unlock_irqrestore(&task_state_lock, s);
+
+        kfree(t->t_kstack);
+        t->t_kstack = NULL;
+        freed = true;
+    }
+
+    /*
+     * A settled thread may have been the last thing between a
+     * threaded zombie and its reaper -- kick the reap wait queue so
+     * init's waitpid(-1) retries (housekeeping calls this every
+     * couple of ms; SYS_thread_exit callers get the kick inline).
+     */
+    if (freed)
+        wait_wake_all(&reap_wq);
 }
 
 /* ---- faults ---------------------------------------------------------------------- */

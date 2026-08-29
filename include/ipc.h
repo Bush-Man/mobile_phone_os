@@ -51,8 +51,15 @@ bool pipe_readable_bytes_left(const struct file *f, size_t *out);
 
 /* ---- shared memory ------------------------------------------------------------ */
 
-#define SHM_PAGE_MAX    16u             /* frames per object           */
-#define SHM_OBJS_MAX     8u
+/*
+ * Phase 15 raised both limits: UI window surfaces are shm objects
+ * now, and one 800x600 XRGB8888 surface is 469 pages (1.83 MiB),
+ * with six app windows on top. 512 pages per object = 2 MiB; the
+ * static page arrays cost SHM_OBJS_MAX * SHM_PAGE_MAX * 8 bytes
+ * (48 KiB) -- noise against the 128 MiB dev image.
+ */
+#define SHM_PAGE_MAX   512u             /* frames per object           */
+#define SHM_OBJS_MAX    12u
 
 /*
  * Mappings live in the dedicated user SHM window -- USER_SHM_BASE,

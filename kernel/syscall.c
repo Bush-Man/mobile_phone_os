@@ -31,6 +31,7 @@
 #include "battery.h"
 #include "chardev.h"
 #include "device.h"
+#include "fb.h"
 #include "ipc.h"
 #include "irq.h"
 #include "lib.h"
@@ -472,28 +473,147 @@ static struct vnode *fd_vnode_of(struct proc *p, int fd)
     return f->vn;
 }
 
+/*
+ * Phase 15: ioctl grew per-device dispatch. The console keeps its
+ * line-discipline commands; the fb0 chardev gains the compositor's
+ * presentation path:
+ *
+ *   FBIO_BLIT (1): copy a rect from CALLER memory (packed rows,
+ *                  w*4 bytes each) into the framebuffer -- the
+ *                  compositor presents its private surface with
+ *                  this; uaccess validates every row.
+ *   FBIO_FILL (2): fill a rect with one XRGB8888 value.
+ *   FBIO_INFO (3): copy out width/height/bpp.
+ *
+ * All rects clamp to the canvas; the canvas is whatever
+ * fb_claim_default handed out at boot (it stays alive for the
+ * session, see include/fb.h).
+ */
+#define FBIO_BLIT   1u
+#define FBIO_FILL   2u
+#define FBIO_INFO   3u
+
+struct fbio_blit {
+    uint32_t x, y, w, h;
+    uint64_t src;                       /* user VA, packed rows       */
+};
+
+struct fbio_fill {
+    uint32_t x, y, w, h, c;
+};
+
+struct fbio_info {
+    uint32_t w, h, bpp;
+};
+
+static long fb0_ioctl(unsigned cmd, uint64_t arg)
+{
+    const struct fb_canvas *cv = fb_active();
+    struct fbio_info info;
+    struct fbio_fill fill;
+    struct fbio_blit blit;
+
+    if (!cv || !cv->frames)
+        return -ENODEV;
+
+    switch (cmd) {
+    case FBIO_INFO:
+        info.w = cv->width;
+        info.h = cv->height;
+        info.bpp = FB_BPP;
+        if (uacc_copy_out_cur((void *)(uintptr_t)arg, &info,
+                              sizeof(info)))
+            return -EFAULT;
+        return 0;
+
+    case FBIO_FILL:
+        if (uacc_copy_in_cur(&fill, (const void *)(uintptr_t)arg,
+                             sizeof(fill)))
+            return -EFAULT;
+        fb_fill_rect((struct fb_canvas *)cv, fill.x, fill.y,
+                     fill.w, fill.h, fill.c);
+        return 0;
+
+    case FBIO_BLIT: {
+        char row[4096];
+
+        if (uacc_copy_in_cur(&blit, (const void *)(uintptr_t)arg,
+                             sizeof(blit)))
+            return -EFAULT;
+        if (!blit.w || !blit.h)
+            return 0;
+        if (blit.x >= cv->width || blit.y >= cv->height)
+            return -EINVAL;
+        if (blit.w > cv->width - blit.x)
+            blit.w = cv->width - blit.x;
+        if (blit.h > cv->height - blit.y)
+            blit.h = cv->height - blit.y;
+        if (blit.w * FB_BPP > sizeof(row))
+            return -EINVAL;
+
+        for (unsigned r = 0; r < blit.h; r++) {
+            uint64_t src_row =
+                blit.src + (uint64_t)r * blit.w * FB_BPP;
+            uint64_t dst_off =
+                ((uint64_t)(blit.y + r)) * cv->stride_bytes +
+                (uint64_t)blit.x * FB_BPP;
+            uint64_t left = (uint64_t)blit.w * FB_BPP;
+
+            /* a row can span framebuffer pages: chunk by the
+             * destination page just like fb0_write does         */
+            while (left) {
+                uint64_t in_page =
+                    PAGE_SIZE - (dst_off & (PAGE_SIZE - 1));
+                size_t chunk = left < in_page ? (size_t)left
+                                              : (size_t)in_page;
+                uint8_t *dst = (uint8_t *)(uintptr_t)vmm_dmap(
+                    cv->frames[dst_off >> PAGE_SHIFT] +
+                    (dst_off & (PAGE_SIZE - 1)));
+
+                if (uacc_copy_in_cur(
+                        row, (const void *)(uintptr_t)src_row,
+                        chunk))
+                    return -EFAULT;
+                memcpy(dst, row, chunk);
+                src_row += chunk;
+                dst_off += chunk;
+                left -= chunk;
+            }
+        }
+        return 0;
+    }
+    default:
+        return -EINVAL;
+    }
+}
+
 static long sys_ioctl(uint64_t fd, uint64_t cmd, uint64_t arg)
 {
     struct vnode *vn = fd_vnode_of(proc_current(), (int)fd);
 
-    (void)arg;
     if (!vn)
         return -EBADF;
-    if (vn->type != V_CHARDEV || !vn->priv ||
-        strncmp(((struct char_dev *)vn->priv)->name,
-                CONSOLE_DEV_NAME, 8))
+    if (vn->type != V_CHARDEV || !vn->priv)
         return -ENOTTY;
 
-    switch (cmd) {
-    case 1:                                 /* TTY_RAW            */
-        tty_set_canon(false);
-        return 0;
-    case 2:                                 /* TTY_CANONICAL      */
-        tty_set_canon(true);
-        return 0;
-    default:
-        return -EINVAL;
+    if (!strncmp(((struct char_dev *)vn->priv)->name, "fb0", 4))
+        return fb0_ioctl((unsigned)cmd, arg);
+
+    if (!strncmp(((struct char_dev *)vn->priv)->name,
+                 CONSOLE_DEV_NAME, 8)) {
+        switch (cmd) {
+        case 1:                             /* TTY_RAW            */
+            tty_set_canon(false);
+            return 0;
+        case 2:                             /* TTY_CANONICAL      */
+            tty_set_canon(true);
+            return 0;
+        default:
+            return -EINVAL;
+        }
     }
+
+    return -ENOTTY;
 }
 
 /*

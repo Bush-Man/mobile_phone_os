@@ -47,8 +47,13 @@ typedef __builtin_va_list va_list;
 #define SYS_unlink    19
 #define SYS_ioctl     20
 #define SYS_mmap      21
+#define SYS_shmget    22
+#define SYS_shmat     23
+#define SYS_shmdt     24
 #define SYS_pipe      25
 #define SYS_dup       26
+#define SYS_usock_serve   32
+#define SYS_usock_connect 33
 #define SYS_socket    34
 #define SYS_connect   35
 #define SYS_send      39
@@ -177,6 +182,11 @@ void   sleep_ms(u64 ms);
 u64    uptime_ms(void);
 void  *mmap_anon(size_t len);        /* SYS_mmap, private anonymous   */
 char  *sbrk(i64 incr);               /* malloc's growth primitive     */
+int    shmget(u64 npages);           /* create shm object -> id       */
+void  *shmat(int id);                /* map into this process         */
+int    shmdt(void *va);
+int    usock_serve(const char *path);    /* publish listener fd       */
+int    usock_connect(const char *path);  /* connect -> fd             */
 
 int    psinfo(void *ents, unsigned max);
 int    mountinfo(void *ents, unsigned max);

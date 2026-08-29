@@ -144,6 +144,31 @@ void *mmap_anon(size_t len)
     return (void *)(uintptr_t)_sys2(SYS_mmap, 0, (i64)len);
 }
 
+int shmget(u64 npages)
+{
+    return (int)_sys1(SYS_shmget, (i64)npages);
+}
+
+void *shmat(int id)
+{
+    return (void *)(uintptr_t)_sys2(SYS_shmat, id, 0);
+}
+
+int shmdt(void *va)
+{
+    return (int)_sys1(SYS_shmdt, (i64)va);
+}
+
+int usock_serve(const char *path)
+{
+    return (int)_sys1(SYS_usock_serve, (i64)path);
+}
+
+int usock_connect(const char *path)
+{
+    return (int)_sys1(SYS_usock_connect, (i64)path);
+}
+
 /* ---- phase-14 report calls ----------------------------------------- */
 
 int psinfo(void *ents, unsigned max)

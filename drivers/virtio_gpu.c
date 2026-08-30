@@ -544,6 +544,10 @@ int virtio_gpu_attach(struct virtio_dev *vt)
     virtio_set_status(vt,
                       virtio_get_status(vt) | VS_DRIVER_OK);
 
+    /* publish the head: gpu_claim/gpu_cmd/fb_virtio_gpu_present all
+     * reach the device through this global, not through vt->priv */
+    vgpu = v;
+
     attached = true;
     kprintf("vgpu: present (canvas arming deferred to first claim)\n");
     return 0;

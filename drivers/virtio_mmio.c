@@ -90,6 +90,11 @@ uint32_t virtio_get_status(struct virtio_dev *d)
     return mmio_read32(d->base + VREG_STATUS);
 }
 
+uint32_t virtio_int_status(struct virtio_dev *d)
+{
+    return mmio_read32(d->base + VREG_INT_STATUS);
+}
+
 void virtio_set_status(struct virtio_dev *d, uint32_t st)
 {
     mmio_write32(d->base + VREG_STATUS, st);
@@ -256,6 +261,27 @@ static void vm_bottom(void *arg)
             virtq_drain_used(d, &d->vq[i]);
 }
 
+/*
+ * Completion poll for the blocking request paths (vblk IO, gpu
+ * commands). The used ring is the authoritative record of what the
+ * device finished; the interrupt is only a hint that it moved. Any
+ * waiter that sleeps on a ->done flag must call this so a lost or
+ * mis-routed line cannot hang the request forever.
+ */
+void virtio_poll(struct virtio_dev *d)
+{
+    uint32_t st;
+
+    if (!d)
+        return;
+
+    st = mmio_read32(d->base + VREG_INT_STATUS);
+    if (st)
+        mmio_write32(d->base + VREG_INT_ACK, st);
+
+    vm_bottom(d);
+}
+
 static bool vm_irq_top(void *arg)
 {
     struct virtio_dev *d = arg;
@@ -343,7 +369,13 @@ static int vm_probe(struct device *dev)
     }
 
     if (d->irq && irq_register(d->irq, "virtio-mmio", vm_irq_top, d)) {
-        irq_set_trigger_edge(d->irq, true);
+        /*
+         * virtio-mmio drives its interrupt line level-high and holds
+         * it until InterruptACK clears InterruptStatus. Configuring
+         * it edge-triggered loses every completion whose line was
+         * already asserted, which stalls the queue-drain path.
+         */
+        irq_set_trigger_edge(d->irq, false);
         irq_set_priority(d->irq, 0x90);
         irq_enable(d->irq);
     } else {

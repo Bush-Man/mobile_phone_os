@@ -176,12 +176,18 @@ static void test_kmsg(void)
 
     CHECK(kmsg_dump("/var/kmsg") == 0, "kmsg: dumped to /var/kmsg");
     {
-        struct file *f;
+        struct file *f = NULL;
         char buf[64];
-        long r;
+        long r = 0;
 
         CHECK(vfs_open("/var/kmsg", O_RDONLY, &f) == 0,
               "kmsg: dump file readable");
+        if (!f) {
+            /* open left f untouched: reading it would dereference
+             * an uninitialised pointer and panic the kernel */
+            CHECK(false, "kmsg: persisted content");
+            return;
+        }
         r = f_read(f, buf, sizeof(buf) - 1);
         if (r > 0)
             buf[r] = 0;

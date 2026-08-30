@@ -73,41 +73,55 @@ int fb_backend_register(const struct fb_backend *b)
 
 int fb_claim_default(struct fb_canvas *out)
 {
+    static struct fb_canvas held;
+    const struct fb_backend *cand[FB_BACKEND_MAX];
+    unsigned n;
     daif_state s;
 
     if (!out)
         return -1;
 
+    /*
+     * claim() arms real hardware: the virtio-gpu backend blocks on a
+     * command round-trip whose completion arrives by IRQ. So snapshot
+     * the registry under the lock and run the claims with IRQs live
+     * and no lock held -- calling claim() from inside the critical
+     * section deadlocks the caller against its own completion IRQ.
+     */
     spin_lock_irqsave(&reg_lock, &s);
-    for (unsigned i = 0; i < nbackends; i++) {
+    n = nbackends;
+    for (unsigned i = 0; i < n; i++)
+        cand[i] = backends[i];
+    spin_unlock_irqrestore(&reg_lock, s);
+
+    for (unsigned i = 0; i < n; i++) {
         struct fb_canvas cv;
 
         memset(&cv, 0, sizeof(cv));
-        if (backends[i]->claim(&cv) == 0) {
-            if (cv.stride_bytes == 0 ||
-                cv.width == 0 || cv.height == 0 ||
-                !cv.frames || cv.nframes == 0 ||
-                cv.stride_bytes > FB_MAX_STRIDE) {
-                spin_unlock_irqrestore(&reg_lock, s);
-                kprintf("fb: backend %s returned bad geometry\n",
-                        backends[i]->name);
-                continue;
-            }
-            /* stash the winning canvas statically                 */
-            static struct fb_canvas held;
-            held = cv;
-            disp.cv = &held;
-            disp.active = true;
-            memcpy(out, &cv, sizeof(*out));
-            spin_unlock_irqrestore(&reg_lock, s);
-            kprintf("fb: canvas \"%s\" %ux%u from %s (%s)\n",
-                    out->name, out->width, out->height,
-                    backends[i]->name,
-                    out->double_buffered ? "double" : "single");
-            return 0;
+        if (cand[i]->claim(&cv) != 0)
+            continue;
+
+        if (cv.stride_bytes == 0 ||
+            cv.width == 0 || cv.height == 0 ||
+            !cv.frames || cv.nframes == 0 ||
+            cv.stride_bytes > FB_MAX_STRIDE) {
+            kprintf("fb: backend %s returned bad geometry\n",
+                    cand[i]->name);
+            continue;
         }
+
+        spin_lock_irqsave(&reg_lock, &s);
+        held = cv;
+        disp.cv = &held;
+        disp.active = true;
+        spin_unlock_irqrestore(&reg_lock, s);
+
+        memcpy(out, &cv, sizeof(*out));
+        kprintf("fb: canvas \"%s\" %ux%u from %s (%s)\n",
+                out->name, out->width, out->height, cand[i]->name,
+                out->double_buffered ? "double" : "single");
+        return 0;
     }
-    spin_unlock_irqrestore(&reg_lock, s);
     return -1;
 }
 

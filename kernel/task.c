@@ -219,6 +219,7 @@ static void park_current(enum task_state state)
 
 void msleep(uint64_t msecs)
 {
+    uint64_t ticks;
     daif_state s;
 
     if (msecs == 0) {
@@ -226,9 +227,22 @@ void msleep(uint64_t msecs)
         return;
     }
 
+    /*
+     * Round the deadline UP to a whole tick. Truncating instead
+     * yields wake_at == now for any sub-tick sleep (msleep(2) at
+     * 100 Hz), so sched_tick re-readies the task on the very next
+     * tick and it never actually leaves the run queue. A high-prio
+     * task polling in such a loop then starves every lower-prio
+     * task -- including housekeeping, the only tasklet drainer, so
+     * the IRQ completion the poller is waiting for can never be
+     * delivered.
+     */
+    ticks = (msecs * TIME_HZ + 999u) / 1000u;
+    if (!ticks)
+        ticks = 1;
+
     spin_lock_irqsave(&task_state_lock, &s);
-    this_cpu()->current->wake_at =
-        jiffies_read() + msecs * TIME_HZ / 1000u;
+    this_cpu()->current->wake_at = jiffies_read() + ticks;
     spin_unlock_irqrestore(&task_state_lock, s);
 
     park_current(TASK_SLEEPING);

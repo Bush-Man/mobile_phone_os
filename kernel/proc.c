@@ -545,9 +545,6 @@ static struct trap_frame *kstack_frame(struct proc *p)
     return (struct trap_frame *)(top - sizeof(struct trap_frame));
 }
 
-/* mm/vmm.c page-table walker used by the fault/debug paths below */
-extern void vmm_debug_walk(uint64_t ttbr0, uint64_t va);
-
 /*
  * Body of a freshly spawned/exec'd process's task. The task adopts
  * its ->proc itself, closing the create/pick race without extra
@@ -568,18 +565,6 @@ static void proc_task_body(void *raw)
 
     tf = kstack_frame(p);
     memcpy(tf, &p->entry_tf, sizeof(*tf));
-
-    /* TEMP DEBUG: state right before the first eret to EL0 */
-    {
-        uint64_t tbr;
-
-        __asm__ volatile("mrs %0, ttbr0_el1" : "=r"(tbr));
-        kprintf("[dbg2] pre-eret %s: ttbr0=%llx elr=%llx root=%llx\n",
-                p->name, (unsigned long long)tbr,
-                (unsigned long long)p->entry_tf.elr,
-                (unsigned long long)p->root_pa);
-        vmm_debug_walk(tbr & 0x0000ffffffffffffULL, p->entry_tf.elr);
-    }
 
     proc_enter_user(tf);                /* never returns              */
 }
@@ -1224,12 +1209,21 @@ long proc_do_exec(const char *name,
 
     p_strcpy(p->name, name, PROC_NAME_MAX);
 
+    /*
+     * Switch to the new root BEFORE releasing the old one. Kernel
+     * text and the kernel stack live at lower-half VAs, so they
+     * translate through TTBR0 -- and pmm_free() writes its freelist
+     * link into the first word of every frame it takes back, which
+     * for a root table is the L0 entry covering the whole shared
+     * kernel map. Freeing oroot while TTBR0 still points at it
+     * unmaps the code that is executing.
+     */
+    proc_address_space_switch(p);
+
     vmm_root_release(oroot, USER_L0_LO, USER_L0_HI);
     vmm_root_free(oroot);
     asid_release(oasid);
     (void)obrk;
-
-    proc_address_space_switch(p);
 
     frame = kstack_frame(p);
     memcpy(frame, &tf, sizeof(*frame));
@@ -1415,127 +1409,6 @@ void proc_user_fault(struct trap_frame *tf, uint64_t esr, uint64_t far)
 {
     struct proc *p = proc_current();
     uint64_t ec = (esr >> 26) & 0x3f;
-
-    /* TEMP DEBUG: dump ttbr0/tcr and walk the faulting VA */
-    {
-        uint64_t ttbr0, tcr, par, mair, sctlr;
-
-        __asm__ volatile("mrs %0, ttbr0_el1" : "=r"(ttbr0));
-        __asm__ volatile("mrs %0, tcr_el1" : "=r"(tcr));
-        __asm__ volatile("mrs %0, mair_el1" : "=r"(mair));
-        __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
-        kprintf("[dbg] TTBR0=%llx TCR=%llx MAIR=%llx SCTLR=%llx\n",
-                (unsigned long long)ttbr0, (unsigned long long)tcr,
-                (unsigned long long)mair, (unsigned long long)sctlr);
-        vmm_debug_walk(ttbr0 & 0x0000ffffffffffffULL, far);
-
-        /*
-         * Ask the hardware itself: AT S1E0R = EL0 view, AT S1E1R =
-         * EL1 view. PAR bit0 = F (1 = fault), bits[6:1] = FSC.
-         */
-        __asm__ volatile("at s1e0r, %0" :: "r"(far) : "memory");
-        __asm__ volatile("isb");
-        __asm__ volatile("mrs %0, par_el1" : "=r"(par));
-        kprintf("[dbg] AT S1E0R PAR=%llx (F=%d FSC=%d)\n",
-                (unsigned long long)par, (int)(par & 1),
-                (int)((par >> 1) & 0x3f));
-        __asm__ volatile("at s1e1r, %0" :: "r"(far) : "memory");
-        __asm__ volatile("isb");
-        __asm__ volatile("mrs %0, par_el1" : "=r"(par));
-        kprintf("[dbg] AT S1E1R PAR=%llx (F=%d FSC=%d)\n",
-                (unsigned long long)par, (int)(par & 1),
-                (int)((par >> 1) & 0x3f));
-
-        /*
-         * Experiment: bisect WHY the walker rejects this leaf. The
-         * chain is root -> L0[2] -> L1[0] -> L2[0] -> L3[0] = leaf.
-         * Controls: a kernel-heap VA (upper half, TTBR1, L3 page)
-         * must translate, proving L3 pages are fine under TTBR1.
-         */
-        {
-            extern char KERN_HEAP_BASE_ALIAS[];
-            uint64_t l1t, l2t, l3t, leaf0, par2, *l2p, *l3p;
-
-            l1t = *(uint64_t *)(uintptr_t)
-                ((ttbr0 & 0x0000ffffffffffffULL) + 16);
-            if ((l1t & 3) == 3) {
-                l2t = *(uint64_t *)(uintptr_t)(l1t & 0x0000fffffffff000ULL);
-                l3t = *(uint64_t *)(uintptr_t)
-                    ((l2t & 0x0000fffffffff000ULL) + 0);
-                l2p = (uint64_t *)(uintptr_t)(l1t & 0x0000fffffffff000ULL);
-                l3p = (uint64_t *)(uintptr_t)(l2t & 0x0000fffffffff000ULL);
-                leaf0 = l3p[0];
-                kprintf("[dbg] chain: L1t=%llx L2t=%llx L3t=%llx leaf=%llx\n",
-                        (unsigned long long)l1t, (unsigned long long)l2t,
-                        (unsigned long long)l3t, (unsigned long long)leaf0);
-
-                /* control 0: heap VA via TTBR1 (EL1 + EL0 views) */
-                {
-                    uint64_t hva = 0x5000000000ULL;  /* probe-ish heap VA */
-
-                    __asm__ volatile("at s1e1r, %0" :: "r"(hva) : "memory");
-                    __asm__ volatile("isb");
-                    __asm__ volatile("mrs %0, par_el1" : "=r"(par2));
-                    kprintf("[dbg] heap AT s1e1r: PAR=%llx F=%d FSC=%d\n",
-                            (unsigned long long)par2, (int)(par2 & 1),
-                            (int)((par2 >> 1) & 0x3f));
-                }
-
-                /* 1: true leaf, unchanged (control) */
-                l3p[0] = leaf0;
-                __asm__ volatile("tlbi vmalle1is; dsb sy; isb");
-                __asm__ volatile("at s1e0r, %0" :: "r"(far) : "memory");
-                __asm__ volatile("isb");
-                __asm__ volatile("mrs %0, par_el1" : "=r"(par));
-                kprintf("[dbg] leaf-asis : F=%d FSC=%d\n",
-                        (int)(par & 1), (int)((par >> 1) & 0x3f));
-
-                /* 2: no PXN */
-                l3p[0] = leaf0 & ~(1ull << 53);
-                __asm__ volatile("tlbi vmalle1is; dsb sy; isb");
-                __asm__ volatile("at s1e0r, %0" :: "r"(far) : "memory");
-                __asm__ volatile("isb");
-                __asm__ volatile("mrs %0, par_el1" : "=r"(par));
-                kprintf("[dbg] leaf-noPXN: F=%d FSC=%d\n",
-                        (int)(par & 1), (int)((par >> 1) & 0x3f));
-
-                /* 3: no PXN, no UXN */
-                l3p[0] = leaf0 & ~(3ull << 53);
-                __asm__ volatile("tlbi vmalle1is; dsb sy; isb");
-                __asm__ volatile("at s1e0r, %0" :: "r"(far) : "memory");
-                __asm__ volatile("isb");
-                __asm__ volatile("mrs %0, par_el1" : "=r"(par));
-                kprintf("[dbg] leaf-noXN : F=%d FSC=%d\n",
-                        (int)(par & 1), (int)((par >> 1) & 0x3f));
-
-                /* 4: no nG */
-                l3p[0] = leaf0 & ~(1ull << 11);
-                __asm__ volatile("tlbi vmalle1is; dsb sy; isb");
-                __asm__ volatile("at s1e0r, %0" :: "r"(far) : "memory");
-                __asm__ volatile("isb");
-                __asm__ volatile("mrs %0, par_el1" : "=r"(par));
-                kprintf("[dbg] leaf-noNG : F=%d FSC=%d\n",
-                        (int)(par & 1), (int)((par >> 1) & 0x3f));
-
-                /* 5: L2 2MiB block over the same VA (kernel image RWX) */
-                l3p[0] = leaf0;
-                l2p[0] = 0x40000000ULL | 0x0fc1ULL;
-                __asm__ volatile("tlbi vmalle1is; dsb sy; isb");
-                __asm__ volatile("at s1e0r, %0" :: "r"(far) : "memory");
-                __asm__ volatile("isb");
-                __asm__ volatile("mrs %0, par_el1" : "=r"(par));
-                kprintf("[dbg] L2-block  : F=%d FSC=%d PAR=%llx\n",
-                        (int)(par & 1), (int)((par >> 1) & 0x3f),
-                        (unsigned long long)par);
-
-                /* restore: the proc is dying anyway, but keep the
-                 * tables consistent for the reaper */
-                l2p[0] = ((uint64_t)(uintptr_t)l3p) | 3;
-                l3p[0] = leaf0;
-                __asm__ volatile("tlbi vmalle1is; dsb sy; isb");
-            }
-        }
-    }
 
     kprintf("[proc] FAULT pid %d (%s): EC=%llx FAR=%016llx "
             "ELR=%016llx\n",

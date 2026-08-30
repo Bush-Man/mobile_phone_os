@@ -143,6 +143,7 @@ void gic_eoi(uint32_t iar)
 static void dist_init(void)
 {
     unsigned words = nr_enable_words();
+    unsigned nintids = words * 32u;             /* ISENABLER: 1 bit/id */
     unsigned i;
 
     /* our own interface mask, read back from the banked SGI region */
@@ -155,18 +156,25 @@ static void dist_init(void)
         mmio_write32(gicd + GICD_ICPENDR + 4u * i, 0xffffffffu);
     }
 
-    /* route every SPI to this interface; SGI/PPI region ignores it */
-    for (i = 1; i < words; i++)
+    /*
+     * ITARGETSR and IPRIORITYR hold one BYTE per INTID, so they span
+     * four times as many words as ISENABLER. Sizing these loops by
+     * `words` covered only INTID 0..words*4-1, leaving every SPI
+     * above that with target 0 and no priority -- on qemu virt the
+     * virtio-mmio lines (INTID 48..79) fell in that gap and their
+     * interrupts were never delivered to any cpu interface.
+     */
+    for (i = 8; i < nintids / 4u; i++)          /* skip RO SGI/PPI     */
         mmio_write32(gicd + GICD_ITARGETSR + 4u * i,
                      self_mask | self_mask << 8 |
                      self_mask << 16 | self_mask << 24);
 
     /* uniform mid-table default priority; drivers raise theirs */
-    for (i = 0; i < words; i++)
+    for (i = 0; i < nintids / 4u; i++)
         mmio_write32(gicd + GICD_IPRIORITYR + 4u * i, prio_word(0xa0));
 
     /* level-sensitive defaults across PPI+SPI; SGIs are fixed-edge */
-    for (i = 1; i < words * 2u; i++)            /* ICFGR word = 16 ids */
+    for (i = 1; i < nintids / 16u; i++)         /* ICFGR word = 16 ids */
         mmio_write32(gicd + GICD_ICFGR + 4u * i, 0);
 
     /*

@@ -22,7 +22,9 @@ static bool s_eq(const char *a, const char *b)
 
 int char_dev_register(struct char_dev *cd)
 {
-    if (!cd || !cd->name || !cd->read || !cd->write)
+    /* read-only (event0) and write-only nodes are both legal: a node
+     * needs a name and at least one direction, not both */
+    if (!cd || !cd->name || (!cd->read && !cd->write))
         return -1;
     for (unsigned i = 0; i < ndevs; i++)
         if (devs[i] == cd)

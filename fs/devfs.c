@@ -115,6 +115,8 @@ static long devfs_char_read(struct vnode *vn, uint64_t off,
     struct char_dev *cd = vn->priv;
 
     (void)off;                          /* streams have no offsets    */
+    if (!cd->read)
+        return -EBADF;                  /* write-only node            */
     if (len > 0x10000u)
         len = 0x10000u;
     return cd->read(cd, buf, (unsigned)len);
@@ -126,6 +128,8 @@ static long devfs_char_write(struct vnode *vn, uint64_t off,
     struct char_dev *cd = vn->priv;
 
     (void)off;
+    if (!cd->write)
+        return -EBADF;                  /* read-only stream           */
     if (len > 0x10000u)
         len = 0x10000u;
     return cd->write(cd, buf, (unsigned)len);

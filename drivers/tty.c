@@ -117,11 +117,12 @@ int tty_puts(const char *s)
 
 /* ---- input side ----------------------------------------------------------------- */
 
-static bool reader_ready(void *ctx)
+/* wait_sleep_when() parks while the predicate is TRUE */
+static bool reader_must_wait(void *ctx)
 {
     struct tty *t = ctx;
 
-    return !q_empty(t);
+    return q_empty(t);
 }
 
 static void wake_readers(struct tty *t)
@@ -240,7 +241,7 @@ unsigned tty_lines_pending(void)
 
 int tty_read(char *dst, unsigned max)
 {
-    wait_sleep_when(reader_ready, &ttys0, &ttys0.rdq);
+    wait_sleep_when(reader_must_wait, &ttys0, &ttys0.rdq);
 
     daif_state s = irq_local_save();
     int r;

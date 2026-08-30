@@ -33,10 +33,18 @@
 #define VREG_QUEUE_NUM      0x038
 #define VREG_QUEUE_ALIGN    0x03c
 #define VREG_QUEUE_PFN      0x040
-#define VREG_QUEUE_NOTIFY   0x044
-#define VREG_INT_STATUS     0x050
-#define VREG_INT_ACK        0x054
-#define VREG_STATUS         0x060
+/*
+ * Everything past QueuePFN sits 0x010/0x00c higher than a naive
+ * "next word along" guess: the spec leaves a gap after PFN.
+ * QueueNotify is 0x050, InterruptStatus 0x060, InterruptACK 0x064
+ * and Status 0x070. Getting these wrong is silent -- Status writes
+ * land on read-only InterruptStatus, so DRIVER_OK never reaches the
+ * device and it ignores every kick.
+ */
+#define VREG_QUEUE_NOTIFY   0x050
+#define VREG_INT_STATUS     0x060
+#define VREG_INT_ACK        0x064
+#define VREG_STATUS         0x070
 #define VREG_CONFIG         0x100
 
 #define VDEV_ID_NONE 0u
@@ -123,6 +131,8 @@ void     virtio_reg_write(struct virtio_dev *d, unsigned off, uint32_t v);
 uint32_t virtio_reg_read(struct virtio_dev *d, unsigned off);
 
 uint32_t virtio_get_status(struct virtio_dev *d);
+uint32_t virtio_int_status(struct virtio_dev *d);
+void     virtio_poll(struct virtio_dev *d);
 void     virtio_set_status(struct virtio_dev *d, uint32_t st);
 uint64_t virtio_host_features(struct virtio_dev *d);
 void     virtio_guest_features(struct virtio_dev *d, uint64_t feats);

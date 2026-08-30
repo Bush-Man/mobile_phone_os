@@ -29,6 +29,7 @@
 
 #include "chardev.h"
 #include "fb.h"
+#include "irq.h"
 #include "lib.h"
 #include "mm/kheap.h"
 #include "mm/pmm.h"
@@ -43,7 +44,7 @@
 
 /* ---- command ABI (LE fields, AArch64 native) ------------------------------- */
 
-#define VG_CTRL_HDR_LEN   16u
+#define VG_CTRL_HDR_LEN   24u
 
 #define VG_CMD_GET_DISPLAY_INFO      0x0110u
 #define VG_CMD_RESOURCE_CREATE_2D    0x0101u
@@ -64,10 +65,18 @@
  */
 #define VG_REQ_STAGE_BYTES 16384u
 
+/*
+ * virtio_gpu_ctrl_hdr as the spec defines it: ctx_id and padding are
+ * part of the header, so it is 24 bytes, not 16. Short-changing it
+ * makes the device parse each payload 8 bytes early and reject
+ * every command.
+ */
 struct vg_ctrl_hdr {
     uint32_t type;
     uint32_t flags;
     uint64_t fence_id;
+    uint32_t ctx_id;
+    uint32_t padding;
 } __attribute__((packed));
 
 struct vg_rect {
@@ -99,11 +108,23 @@ struct vg_mem_entry {
     uint32_t padding;
 } __attribute__((packed));
 
+struct vg_attach_backing {              /* follows ctrl_hdr            */
+    uint32_t resource_id;
+    uint32_t nr_entries;
+} __attribute__((packed));
+
 /* ---- device state ------------------------------------------------------------------ */
 
 #define VG_W 800u
 #define VG_H 600u
-#define VG_FMT FB_FMT_XRGB8888
+/*
+ * RESOURCE_CREATE_2D takes a virtio_gpu_formats enum value, NOT a DRM
+ * fourcc -- passing FB_FMT_XRGB8888 ('XR24') here gets the command
+ * rejected with RESP_ERR_INVALID_PARAMETER (0x1205). B8G8R8X8_UNORM
+ * is the enum whose in-memory byte order matches our XRGB8888 canvas.
+ */
+#define VG_FMT_B8G8R8X8_UNORM 2u
+#define VG_FMT VG_FMT_B8G8R8X8_UNORM
 
 #define VG_TIMEOUT_TICKS 50             /* 500 ms at TIME_HZ           */
 
@@ -182,7 +203,13 @@ static int gpu_cmd(uint32_t type, const void *payload, size_t plen)
     memcpy(v->req_stage, &hdr, sizeof(hdr));
     if (plen && plen > VG_REQ_STAGE_BYTES - VG_CTRL_HDR_LEN)
         plen = VG_REQ_STAGE_BYTES - VG_CTRL_HDR_LEN;
-    if (plen)
+    /*
+     * payload == NULL means the caller already staged the body in
+     * req_stage itself (attach_backing builds a variable-length
+     * entry array there). Copying anyway read from address 0 and
+     * zeroed that body, so the device saw resource_id 0.
+     */
+    if (plen && payload)
         memcpy(v->req_stage + VG_CTRL_HDR_LEN, payload, plen);
     memset(v->resp_stage, 0xff, 64);
 
@@ -213,10 +240,14 @@ static int gpu_cmd(uint32_t type, const void *payload, size_t plen)
     while (!v->active.done) {
         if ((long)(jiffies_read() - deadline) >= 0) {
             v->stats.errors++;
+            v->active.resp_type = 0;    /* nothing came back at all */
+            kprintf("vgpu: command 0x%x timed out\n", type);
             rc = -1;
             goto out_unlock;
         }
         msleep(2);
+        /* the used ring, not the interrupt, is the source of truth */
+        virtio_poll(v->vt);
     }
 
     rc = v->active.ok ? 0 : -1;
@@ -284,21 +315,32 @@ static int gpu_cmd_create_resource(void)
 static int gpu_cmd_attach_backing(void)
 {
     struct vgpu_state *v = vgpu;
+    struct vg_attach_backing hdr;
     struct vg_mem_entry *me;
-    uint32_t nents;
 
-    nents = v->nframes;
-    memcpy(v->req_stage + VG_CTRL_HDR_LEN, &nents, sizeof(nents));
+    /*
+     * Payload is resource_id THEN nr_entries, and only then the
+     * entry array. Omitting resource_id both misdescribed the
+     * command and left the array at an odd offset -- its 64-bit
+     * addr stores then took an alignment fault, because the staging
+     * buffer lives in the Device-nGnRE window where unaligned
+     * accesses are architecturally forbidden.
+     */
+    hdr.resource_id = 1;
+    hdr.nr_entries  = v->nframes;
+    memcpy(v->req_stage + VG_CTRL_HDR_LEN, &hdr, sizeof(hdr));
+
     me = (struct vg_mem_entry *)(v->req_stage +
-                                 VG_CTRL_HDR_LEN + sizeof(nents));
-    for (unsigned i = 0; i < nents; i++) {
+                                 VG_CTRL_HDR_LEN + sizeof(hdr));
+    for (unsigned i = 0; i < hdr.nr_entries; i++) {
         me[i].addr    = v->frames[i];
         me[i].length  = PAGE_SIZE;
         me[i].padding = 0;
     }
 
     return gpu_cmd(VG_CMD_RESOURCE_ATTACH_BACKING, NULL,
-                   sizeof(nents) + nents * sizeof(struct vg_mem_entry));
+                   sizeof(hdr) +
+                   hdr.nr_entries * sizeof(struct vg_mem_entry));
 }
 
 
@@ -447,14 +489,24 @@ static int fb0_write(struct char_dev *cd, const char *src, unsigned n)
  */
 static int gpu_arm_resources(struct vgpu_state *v)
 {
+    int rc;
+
     if (v->resources_ready)
         return 0;
     if (gpu_alloc_frames(v)) {
         kprintf("vgpu: no frames for %ux%u canvas\n", VG_W, VG_H);
         return -1;
     }
-    if (gpu_cmd_create_resource() || gpu_cmd_attach_backing()) {
-        kprintf("vgpu: resource setup failed\n");
+    rc = gpu_cmd_create_resource();
+    if (rc) {
+        kprintf("vgpu: RESOURCE_CREATE_2D failed (resp 0x%x)\n",
+                v->active.resp_type);
+        return -1;
+    }
+    rc = gpu_cmd_attach_backing();
+    if (rc) {
+        kprintf("vgpu: ATTACH_BACKING failed (resp 0x%x)\n",
+                v->active.resp_type);
         return -1;
     }
     v->resources_ready = true;

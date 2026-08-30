@@ -197,10 +197,11 @@ release: all
 GIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 # ---- phase 9: graphics + input demo targets -------------------------------
-# virtio-gpu renders into an off-screen host surface by default;
-# override DISPLAYARGS (e.g. make run-display DISPLAYARGS="-display gtk")
-# to see the test pattern live on your desktop.
-DISPLAYARGS ?= -display none
+# `make run` is the serial-only target: -nographic attaches no display
+# device at all, so nothing can appear on screen by design. Use
+# `make run-display` to get the framebuffer in a real window; override
+# DISPLAYARGS (e.g. DISPLAYARGS="-display none") for headless runs.
+DISPLAYARGS ?= -display gtk
 INPUTDEVS   := -device virtio-gpu-device \
                -device virtio-tablet-device \
                -device virtio-keyboard-device

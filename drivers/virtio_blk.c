@@ -136,6 +136,8 @@ static int vblk_rw(struct vblk_dev *v, bool write, uint64_t lba,
             goto out_restore;
         }
         msleep(2);
+        /* the used ring, not the interrupt, is the source of truth */
+        virtio_poll(v->vt);
     }
 
     if (req->ok) {

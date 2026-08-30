@@ -154,23 +154,24 @@ static void sms_tests(void)
         pdu[0] = 0x04;
         pdu[1] = 0x07;
         pdu[2] = 0x81;
-        pdu[3] = 0x51; pdu[4] = 0x15; pdu[5] = 0x32;
-        pdu[6] = 0xF1;
+        /* "5551234" as swapped BCD, 'F'-padded: 55 15 32 F4        */
+        pdu[3] = 0x55; pdu[4] = 0x15; pdu[5] = 0x32;
+        pdu[6] = 0xF4;
         pdu[7] = 0x00;                  /* PID                        */
         pdu[8] = 0x00;                  /* DCS                        */
         for (int i = 0; i < 7; i++)
             pdu[9 + i] = 0x00;          /* SCTS                       */
-        pdu[16] = 0x0Fu;                /* UDL: 15 septets            */
         {
             static const char txt[] = "INBOX TEST 1";
-            int nb = sms_encode_7bit(txt, &pdu[17],
-                                     sizeof(pdu) - 17u);
+            int nb;
 
+            /* UDL is a septet count for a 7-bit DCS: one per char   */
+            pdu[16] = (uint8_t)(sizeof(txt) - 1u);
+            nb = sms_encode_7bit(txt, &pdu[17], sizeof(pdu) - 17u);
             if (nb < 0)
                 return;
+            plen = 17 + nb;
         }
-        plen = 17 + sms_encode_7bit("INBOX TEST 1",
-                                    &pdu[17], sizeof(pdu) - 17u);
 
         for (int i = 0; i < plen; i++) {
             static const char hd[] = "0123456789ABCDEF";

@@ -28,8 +28,9 @@ void phase13_init(const struct platform_info *plat)
     done = true;
 
     audio_null_backend_register();
-    /* boards with a codec entry would register i2s here (scaffold
-     * refuses everything until configured, so order is harmless)  */
+    /* The i2s scaffold outranks null but refuses open() until a codec
+     * is configured; audio_open_* walks down the priority list when a
+     * backend refuses, so registering it here costs nothing on QEMU. */
     audio_i2s_backend_register();
 
     audio_subsys_init(plat);

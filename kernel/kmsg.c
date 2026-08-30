@@ -21,7 +21,13 @@
 #include "syscall.h"
 #include "vfs.h"
 
-#define KMSG_BYTES  8192u
+/*
+ * Sized to hold a whole verbose boot, selftests included (~25 KiB on
+ * QEMU). At 8 KiB the ring wrapped before the release battery ran, so
+ * the banner and the bring-up lines -- the part worth reading after a
+ * reset -- were the first thing lost.
+ */
+#define KMSG_BYTES  65536u
 
 static char     kmsg_buf[KMSG_BYTES];
 static unsigned kmsg_head;              /* next write slot           */

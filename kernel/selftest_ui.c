@@ -33,6 +33,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "chardev.h"
 #include "input.h"
 #include "lib.h"
 #include "modem.h"
@@ -100,7 +101,7 @@ static void test_protocol(void)
     if (pid <= 0)
         return;
 
-    rc = proc_do_waitpid(pid, &code);
+    rc = proc_kernel_wait(pid, &code, 30000u);
     CHECK(rc == pid, "uitest reaped");
     CHECK(code == 0, "ui protocol round trip");
 }
@@ -123,15 +124,15 @@ static void inject_sms(void)
     pdu[0] = 0x04;                  /* flags: DELIVER           */
     pdu[1] = 0x07;                  /* OA len (digits)          */
     pdu[2] = 0x81;                  /* TOaN/ToN                 */
-    pdu[3] = 0x51;                  /* "5551234" swizzled       */
-    pdu[4] = 0x15;
+    pdu[3] = 0x55;                  /* "5551234" swapped BCD,   */
+    pdu[4] = 0x15;                  /* 'F'-padded               */
     pdu[5] = 0x32;
-    pdu[6] = 0xF1;
+    pdu[6] = 0xF4;
     pdu[7] = 0x00;                  /* PID                      */
     pdu[8] = 0x00;                  /* DCS                      */
     for (int i = 0; i < 7; i++)
         pdu[9 + i] = 0x00;          /* SCTS                     */
-    pdu[16] = 0x0Fu;                /* UDL: 15 septets          */
+    pdu[16] = (uint8_t)(sizeof(txt) - 1u);  /* UDL: septet count    */
     plen = 17u + (unsigned)sms_encode_7bit(txt, &pdu[17],
                                            sizeof(pdu) - 17u);
 
@@ -184,6 +185,20 @@ void ui_selftest_task(void *arg)
     (void)arg;
 
     msleep(500);                    /* let init spawn settle    */
+
+    /*
+     * Every check below needs the compositor, which needs a
+     * framebuffer. `make run` is serial-only (-nographic attaches no
+     * virtio-gpu at all), so report a skip instead of failing checks
+     * the configuration cannot satisfy -- same convention gfxtest
+     * uses. `make run-display` exercises this battery for real.
+     */
+    if (!char_dev_find("fb0")) {
+        kprintf("uitest15: no display device, skipping\n");
+        kprintf("selftest: ui skipped (no framebuffer)\n");
+        task_exit();
+    }
+
     wait_for_compositor();
 
     test_protocol();

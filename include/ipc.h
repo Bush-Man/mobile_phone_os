@@ -89,6 +89,10 @@ unsigned shm_object_refs(int id);
  * BEFORE its page tables are destroyed. Kernel threads pass.       */
 void ipc_proc_exit(struct proc *p);
 
+/* Re-map the parent's shm attachments into a fresh child at the same
+ * VAs; called from proc_do_fork() once the child's root exists.     */
+int  ipc_proc_fork(struct proc *child, struct proc *parent);
+
 /* ---- message queues ------------------------------------------------------------- */
 
 #define MQ_NAME_MAX     24

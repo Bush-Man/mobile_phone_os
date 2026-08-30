@@ -70,12 +70,18 @@ static long console_write_raw(uint64_t ubuf, size_t left)
 
     while (left) {
         size_t chunk = left < sizeof(kbuf) ? left : sizeof(kbuf);
+        daif_state s;
 
         if (uacc_copy_in_cur(kbuf, (const void *)(uintptr_t)(ubuf + off),
                              chunk))
             return -EFAULT;
+        /* hold the tx lock across the whole chunk: kprintf and
+         * tty_emit take the same lock, and without it userspace
+         * writes cut into kernel lines mid-word */
+        uart_tx_begin(&s);
         for (size_t i = 0; i < chunk; i++)
             uart_putc(kbuf[i]);
+        uart_tx_end(s);
         off += chunk;
         left -= chunk;
     }
@@ -515,8 +521,18 @@ static long fb0_ioctl(unsigned cmd, uint64_t arg)
     struct fbio_fill fill;
     struct fbio_blit blit;
 
-    if (!cv || !cv->frames)
-        return -ENODEV;
+    if (!cv || !cv->frames) {
+        /* the node is openable from attach, but the canvas arms on
+         * first use: claim it here so whoever gets there first (the
+         * compositor, usually) does not have to wait for gfxtest */
+        struct fb_canvas armed;
+
+        if (fb_claim_default(&armed))
+            return -ENODEV;
+        cv = fb_active();
+        if (!cv || !cv->frames)
+            return -ENODEV;
+    }
 
     /*
      * Phase 16: presenting frames is a capability. The compositor
@@ -997,8 +1013,11 @@ static long sys_usock_connect(uint64_t upath)
         return -EPERM;
 
     rc = usock_connect(path, &cf);
-    if (rc)
+    if (rc) {
+        kprintf("[dbg] usock_connect(%s) by %s -> %ld\n",
+                path, p->name, rc);
         return rc;
+    }
     fd = fd_install_of(p, cf);
     if (fd < 0) {
         file_close(cf);

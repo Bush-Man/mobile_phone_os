@@ -73,6 +73,14 @@ static void emit_u64(struct sink *s, u64 v, unsigned base,
         v /= base;
     } while (v && n < (int)sizeof(tmp));
 
+    /* digits came out least-significant first: flip before emitting */
+    for (int i = 0, j = n - 1; i < j; i++, j--) {
+        char c = tmp[i];
+
+        tmp[i] = tmp[j];
+        tmp[j] = c;
+    }
+
     if (neg)
         sink_putc(s, '-');
     pad_emit(s, tmp, (size_t)n, width, padc, left);

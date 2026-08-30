@@ -147,7 +147,10 @@ static int tcp_xmit(struct tcp_pcb *p, uint8_t flags,
                     uint32_t seq)
 {
     struct netif *nif = netif_route(p->remote_ip);
-    uint8_t pkt[20 + TCP_MSS];
+    /* ip4_output prepends its header at buf-20: hand it a pointer
+     * with 20 bytes of headroom, not the start of the array      */
+    uint8_t frame[20 + 20 + TCP_MSS];
+    uint8_t *pkt = frame + 20;
     uint16_t len;
 
     if (!nif || !p->remote_ip)
@@ -244,13 +247,18 @@ int tcp_connect(struct tcp_pcb *pcb, uint32_t ip, uint16_t port,
     pcb->snd_una = pcb->snd_nxt = TCP_ISN();
     pcb->state   = TCP_SYN_SENT;
 
-    if (tcp_xmit(pcb, TCP_SYN, NULL, 0, pcb->snd_nxt++)) {
-        pcb->state = TCP_CLOSED;
-        return -1;
-    }
+    /* loopback delivers synchronously, so the SYN-ACK handler can
+     * clear snd_inflight inside tcp_xmit: arm the retransmit state
+     * before transmitting, never after                             */
     pcb->snd_inflight    = true;
     pcb->snd_len         = 0;
     pcb->snd_timeout_ms  = time_uptime_ms() + TCP_BACKOFF_BASE_MS;
+
+    if (tcp_xmit(pcb, TCP_SYN, NULL, 0, pcb->snd_nxt++)) {
+        pcb->snd_inflight = false;
+        pcb->state = TCP_CLOSED;
+        return -1;
+    }
 
     deadline = time_uptime_ms() + timeout_ms;
     while (pcb->state == TCP_SYN_SENT) {

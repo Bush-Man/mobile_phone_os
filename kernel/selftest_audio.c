@@ -46,8 +46,6 @@ static int failures;
     } while (0)
 
 static int16_t tone_buf[512];
-
-static int16_t tone_buf[512];
 static int16_t chk_buf[512];
 
 static void make_tone(int16_t *buf, unsigned n)
@@ -61,8 +59,8 @@ static void make_tone(int16_t *buf, unsigned n)
 static void mixer_tests(void)
 {
     CHECK(mixer_scale(10000, 255) == 10000, "scale vol=255 unity");
-    CHECK(mixer_scale(10000, 128) == 5023, "scale vol=128 half");
-    CHECK(mixer_scale(-10000, 128) == -5023, "scale negative");
+    CHECK(mixer_scale(10000, 128) == 5020, "scale vol=128 half");
+    CHECK(mixer_scale(-10000, 128) == -5020, "scale negative");
     CHECK(mixer_scale(10000, 0) == 0, "scale vol=0 mute");
 }
 

@@ -66,7 +66,7 @@ static void test_libc(void)
     if (pid <= 0)
         return;
 
-    rc = proc_do_waitpid(pid, &code);
+    rc = proc_kernel_wait(pid, &code, 15000u);
     CHECK(rc == pid, "libctest reaped");
     CHECK(code == 0, "libctest exit code 0");
 }
@@ -86,7 +86,7 @@ static void test_crash(void)
     if (pid <= 0)
         return;
 
-    rc = proc_do_waitpid(pid, &code);
+    rc = proc_kernel_wait(pid, &code, 15000u);
     CHECK(rc == pid, "crasher reaped");
 
     msleep(100);                    /* VFS append settles           */

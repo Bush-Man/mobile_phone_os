@@ -64,6 +64,7 @@ static struct vnode *shell_make(struct ram_node *n)
     vn->type = n->type;
     vn->priv = n;
     vn->ino = n->ino;
+    vn->refs = 1;                       /* caller (or mount) owns it  */
     n->vn_live++;
     return vn;
 }
@@ -79,7 +80,8 @@ static void ramfs_destroy(struct vnode *vn)
     spin_lock_irqsave(&fs->lock, &s);
     if (--n->vn_live == 0 && n->orphan) {
         spin_unlock_irqrestore(&fs->lock, s);
-        kfree(n->data);
+        if (n->data)
+            kfree(n->data);             /* kfree panics on NULL       */
         kfree(n);
         return;
     }
@@ -158,7 +160,8 @@ static int ramfs_create(struct vnode *dir, const char *name,
 static void drop_node(struct ram_node *n)
 {
     if (n->orphan && !n->vn_live) {
-        kfree(n->data);
+        if (n->data)
+            kfree(n->data);             /* kfree panics on NULL       */
         kfree(n);
     }
 }
@@ -272,9 +275,11 @@ static long ramfs_write(struct vnode *vn, uint64_t off,
             spin_unlock_irqrestore(&fs->lock, s);
             return -ENOMEM;
         }
-        memcpy(fresh, n->data, n->len);
+        if (n->data) {
+            memcpy(fresh, n->data, n->len);
+            kfree(n->data);             /* kfree panics on NULL       */
+        }
         memset(fresh + n->len, 0, cap - n->len);
-        kfree(n->data);
         n->data = fresh;
         n->cap = cap;
     }

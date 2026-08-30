@@ -818,6 +818,7 @@ static struct vnode *shell_from(struct e2_inode *in)
     vn->type = in->is_dir ? V_DIR : V_FILE;
     vn->priv = in;
     vn->ino = in->ino;
+    vn->refs = 1;                       /* caller (or mount) owns it  */
     return vn;
 }
 

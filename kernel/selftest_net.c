@@ -41,24 +41,25 @@ static int failures;
         }                                                              \
     } while (0)
 
-/* echo server: kernel-side pcb, serves one connection then exits */
-static void echo_one_connection(void)
+/*
+ * echo server: serves one connection on an already-listening pcb then
+ * returns. It must reuse the caller's listener -- binding a second pcb
+ * to port 7007 fails (port_taken) and the child the client's SYN
+ * spawned is queued on the ORIGINAL listener, so a fresh one would
+ * accept nothing and just burn its timeout.
+ */
+static void echo_one_connection(struct tcp_pcb *srv)
 {
-    struct tcp_pcb *srv = tcp_alloc();
     struct tcp_pcb *conn;
     char buf[64];
     int r, w;
 
     if (!srv)
         return;
-    tcp_bind(srv, IP4_LOOPBACK, 7007u);
-    tcp_listen(srv);
 
     conn = tcp_accept(srv, 8000u);
-    if (!conn) {
-        tcp_close(srv, 100u);
+    if (!conn)
         return;
-    }
 
     r = tcp_read(conn, buf, sizeof(buf), true);
     if (r > 0) {
@@ -66,7 +67,6 @@ static void echo_one_connection(void)
         (void)w;
     }
     tcp_close(conn, 2000u);
-    tcp_close(srv, 2000u);
 }
 
 static void dhcp_arp_tests(bool *have_nic)
@@ -148,7 +148,7 @@ static void tcp_loopback_tests(void)
     /* the echo server runs inline (cooperative): accept, read,    */
     /* reply, close -- then the client reads its echo back         */
     {
-        echo_one_connection();
+        echo_one_connection(srv);
     }
 
     memset(buf, 0, sizeof(buf));
@@ -161,6 +161,7 @@ static void tcp_loopback_tests(void)
     CHECK(r == 0, "tcp FIN -> EOF");
 
     tcp_close(cli, 2000u);
+    tcp_close(srv, 2000u);
 }
 
 static void milestone_process(void)

@@ -27,7 +27,6 @@
 
 struct audio_backend *backends;
 static unsigned nbackends;
-static struct audio_backend *play_be, *cap_be;
 
 static struct {
     uint8_t vol[MIX_CH_MAX];
@@ -41,7 +40,10 @@ static struct {
 
 int16_t mixer_scale(int16_t s, uint8_t vol)
 {
-    return (int16_t)(((int32_t)s * vol + 127) / 255);
+    int32_t p = (int32_t)s * vol;
+
+    /* round half away from zero so +x and -x scale symmetrically */
+    return (int16_t)(p >= 0 ? (p + 127) / 255 : -((-p + 127) / 255));
 }
 
 int mixer_set_volume(unsigned ch, uint8_t vol)
@@ -70,12 +72,6 @@ int audio_backend_register(struct audio_backend *b)
     b->next = backends;
     backends = (struct audio_backend *)b;
     nbackends++;
-    if ((b->caps & AUDIO_CAP_PLAYBACK) &&
-        (!play_be || b->priority > play_be->priority))
-        play_be = (struct audio_backend *)b;
-    if ((b->caps & AUDIO_CAP_CAPTURE) &&
-        (!cap_be || b->priority > cap_be->priority))
-        cap_be = (struct audio_backend *)b;
     spin_unlock_irqrestore(&am.lock, s);
     return 0;
 }
@@ -111,33 +107,74 @@ static struct audio_stream *stream_alloc(enum stream_kind kind,
     return NULL;
 }
 
+/*
+ * Pick the highest-priority backend with `cap` whose priority is
+ * below `ceiling` (UINT_MAX for the first attempt), so callers can
+ * walk the list downwards when a backend refuses to open.
+ */
+static struct audio_backend *backend_below(unsigned cap,
+                                           int ceiling)
+{
+    struct audio_backend *best = NULL;
+
+    for (struct audio_backend *b = backends; b; b = b->next) {
+        if (!(b->caps & cap))
+            continue;
+        if (ceiling >= 0 && b->priority >= ceiling)
+            continue;
+        if (!best || b->priority > best->priority)
+            best = b;
+    }
+    return best;
+}
+
+/*
+ * A high-priority backend that refuses open() (the i2s scaffold
+ * without a codec, for instance) must not mute the whole HAL: fall
+ * through to the next one down.
+ */
+static struct audio_backend *backend_open(unsigned cap, bool capture)
+{
+    int ceiling = -1;
+
+    for (struct audio_backend *b = backend_below(cap, ceiling);
+         b; b = backend_below(cap, ceiling)) {
+        if (b->open(b, capture) == 0)
+            return b;
+        ceiling = b->priority;
+    }
+    return NULL;
+}
+
 struct audio_stream *audio_open_playback(unsigned ch)
 {
+    struct audio_backend *be = backend_open(AUDIO_CAP_PLAYBACK, false);
     struct audio_stream *st;
 
-    if (!play_be || play_be->open(play_be, false))
+    if (!be)
         return NULL;
     st = stream_alloc(ST_PLAY, ch);
     if (!st) {
-        play_be->close(play_be, false);
+        be->close(be, false);
         return NULL;
     }
-    st->be = play_be;
+    st->be = be;
     return st;
 }
 
 struct audio_stream *audio_open_capture(unsigned ch)
 {
+    struct audio_backend *be = backend_open(AUDIO_CAP_CAPTURE, true);
     struct audio_stream *st;
 
-    if (!cap_be || cap_be->open(cap_be, true))
+    if (!be)
         return NULL;
     st = stream_alloc(ST_CAP, ch);
     if (!st) {
-        cap_be->close(cap_be, true);
+        be->close(be, true);
         return NULL;
     }
-    st->be = cap_be;
+    st->be = be;
     return st;
 }
 

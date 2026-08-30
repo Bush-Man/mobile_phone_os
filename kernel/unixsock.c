@@ -599,22 +599,27 @@ long usock_connect(const char *path, struct file **conn_out)
      * We re-check everything under unix_lock every time we are
      * woken, so no edge can be lost between "linked" and "wake".
      */
-    for (;;) {
+    {
         daif_state s;
 
-        spin_lock_irqsave(&unix_lock, &s);
+        for (;;) {
+            spin_lock_irqsave(&unix_lock, &s);
 
-        if (cli->peer) {
-            r = 0;                  /* accepted                     */
-            break;
-        }
-        if (cli->hs_result < 0) {
-            r = cli->hs_result;     /* refused / listener gone      */
-            break;
-        }
+            if (cli->peer) {
+                r = 0;              /* accepted                     */
+                break;
+            }
+            if (cli->hs_result < 0) {
+                r = cli->hs_result; /* refused / listener gone      */
+                break;
+            }
 
+            /* us_park drops unix_lock itself: releasing it here too
+             * would reopen the window where an acceptor's wake lands
+             * before we are on the queue, and lose it */
+            us_park(&cli->hs_wq);
+        }
         spin_unlock_irqrestore(&unix_lock, s);
-        us_park(&cli->hs_wq);       /* drops unix_lock + parks      */
     }
 
     if (r == 0) {

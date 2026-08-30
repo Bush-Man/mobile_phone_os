@@ -4,8 +4,8 @@
  * QEMU virt maps one at 0x09030000 with its interrupt on SPI 7.
  * Register notes that matter:
  *   - GPIODATA uses masked addressing: bits [9:2] of the bus address
- *     select which pins the access touches; within the register the
- *     data bits sit at [8:1].
+ *     select which pins the access touches; within the register pin n
+ *     is simply bit n.
  *   - Direction is per-pin through GPIODIR (1 = output).
  *   - Interrupt block supports level/edge per pin; we arm rising-edge.
  */
@@ -56,7 +56,7 @@ static int pl_dir_out(struct gpio_chip *c, unsigned off, bool val)
                  mmio_read32(p->base + PL061_DIR) | bit);
     /* masked-data write touches exactly this pin */
     mmio_write32(p->base + PL061_DATA_BASE + pl_data_mask(off),
-                 (uint32_t)val << (off + 1));
+                 val ? bit : 0u);
     spin_unlock(&p->lock);
     return 0;
 }
@@ -79,7 +79,7 @@ static void pl_set(struct gpio_chip *c, unsigned off, bool val)
 
     /* masked addressing makes this atomic against other pins */
     mmio_write32(p->base + PL061_DATA_BASE + pl_data_mask(off),
-                 (uint32_t)(val ? 1u : 0u) << (off + 1));
+                 val ? (1u << off) : 0u);
 }
 
 static int pl_get(struct gpio_chip *c, unsigned off)
@@ -88,7 +88,7 @@ static int pl_get(struct gpio_chip *c, unsigned off)
     uint32_t v;
 
     v = mmio_read32(p->base + PL061_DATA_BASE + pl_data_mask(off));
-    return (int)((v >> (off + 1)) & 1u);
+    return (int)((v >> off) & 1u);
 }
 
 /* ---- pin interrupts --------------------------------------------------------- */

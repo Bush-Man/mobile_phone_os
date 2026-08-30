@@ -169,15 +169,29 @@ int abmgr_confirm(void)
 
 int abmgr_switch(void)
 {
-    unsigned other = 1u - (unsigned)stats.active;
+    unsigned other;
     struct ab_slot *s;
 
-    if (!loaded || stats.active < 0)
+    if (!loaded)
         return -ENODEV;
-    if (!tbl.slots[other].valid)
-        return -EINVAL;                 /* nowhere to switch to      */
 
-    tbl.slots[stats.active].active = 0;
+    if (stats.active < 0) {
+        /* nothing active yet (fresh table): bring up the first
+         * sealed slot rather than refusing -- activation is only
+         * ever reachable through this entry point                */
+        if (tbl.slots[0].valid)
+            other = 0u;
+        else if (tbl.slots[1].valid)
+            other = 1u;
+        else
+            return -EINVAL;
+    } else {
+        other = 1u - (unsigned)stats.active;
+        if (!tbl.slots[other].valid)
+            return -EINVAL;             /* nowhere to switch to      */
+        tbl.slots[stats.active].active = 0;
+    }
+
     s = &tbl.slots[other];
     s->active = 1;
     s->boot_attempts = 0;
@@ -201,7 +215,12 @@ int abmgr_evaluate(void)
     stats.rollbacks++;
     tbl.rollbacks = stats.rollbacks;
     (void)table_write_checked();
-    return abmgr_switch();
+    {
+        int r = abmgr_switch();
+
+        /* contract (abmgr.h): 1 == rolled back, <0 == errno       */
+        return r < 0 ? r : 1;
+    }
 }
 
 int abmgr_table_get(struct ab_table *out)

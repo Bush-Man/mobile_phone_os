@@ -421,6 +421,8 @@ static int fb0_read(struct char_dev *cd, char *dst, unsigned max)
     if (!cd || !cd->priv)
         return 0;
     v = cd->priv;
+    if (!v->resources_ready)
+        return 0;                       /* canvas not armed yet       */
     cap = VG_W * VG_H * FB_BPP;
     if (max > cap)
         max = cap;
@@ -455,6 +457,8 @@ static int fb0_write(struct char_dev *cd, const char *src, unsigned n)
     if (!cd || !cd->priv || !src)
         return -1;
     v = cd->priv;
+    if (!v->resources_ready)
+        return -1;                      /* canvas not armed yet       */
     cap = VG_W * VG_H * FB_BPP;
     if (n > cap)
         n = cap;
@@ -533,17 +537,25 @@ static int gpu_claim(struct fb_canvas *out)
     out->double_buffered = false;       /* no fence events negotiated */
     out->flip           = NULL;
     out->priv           = v;
-
-    /* expose the framebuffer node once geometry is live            */
-    if (!v->cd.name) {
-        v->cd.name  = fb0_name;
-        v->cd.priv  = v;
-        v->cd.read  = fb0_read;
-        v->cd.write = fb0_write;
-        if (char_dev_register(&v->cd))
-            kprintf("vgpu: fb0 registration failed\n");
-    }
     return 0;
+}
+
+/*
+ * Register the node at attach, not at claim: the compositor starts
+ * long before gfxtest arms the canvas, and it only needs open() to
+ * succeed -- the read/write/ioctl paths each check resources_ready
+ * (or arm the canvas themselves) before touching a frame.
+ */
+static void fb0_node_register(struct vgpu_state *v)
+{
+    if (v->cd.name)
+        return;
+    v->cd.name  = fb0_name;
+    v->cd.priv  = v;
+    v->cd.read  = fb0_read;
+    v->cd.write = fb0_write;
+    if (char_dev_register(&v->cd))
+        kprintf("vgpu: fb0 registration failed\n");
 }
 
 static const struct fb_backend gpu_backend = {
@@ -599,6 +611,8 @@ int virtio_gpu_attach(struct virtio_dev *vt)
     /* publish the head: gpu_claim/gpu_cmd/fb_virtio_gpu_present all
      * reach the device through this global, not through vt->priv */
     vgpu = v;
+
+    fb0_node_register(v);               /* /dev/fb0 openable now      */
 
     attached = true;
     kprintf("vgpu: present (canvas arming deferred to first claim)\n");

@@ -137,8 +137,8 @@ static void test_aslr(void)
     {
         int code;
 
-        (void)proc_do_waitpid(pid1, &code);
-        (void)proc_do_waitpid(pid2, &code);
+        (void)proc_kernel_wait(pid1, &code, 5000u);
+        (void)proc_kernel_wait(pid2, &code, 5000u);
     }
 }
 
@@ -210,13 +210,18 @@ static void test_kmsg(void)
 
 static void test_watchdog(void)
 {
-    struct watchdog_stats st;
+    struct watchdog_stats st, st2;
 
     watchdog_kick();
     watchdog_stats_get(&st);
     CHECK(st.armed && st.timeout_ms > 0, "wdt: armed with deadline");
-    CHECK(st.kicks > 100, "wdt: heartbeats flowing");
-    CHECK(st.misses == 0, "wdt: no misses");
+
+    /* housekeeping kicks every ~2 ms; an absolute count depends on how
+     * much CPU it got, so watch the counter advance instead */
+    msleep(100);
+    watchdog_stats_get(&st2);
+    CHECK(st2.kicks > st.kicks, "wdt: heartbeats flowing");
+    CHECK(st2.misses == 0, "wdt: no misses");
 }
 
 /* ---- A/B slot manager ------------------------------------------------ */

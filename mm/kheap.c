@@ -217,8 +217,10 @@ void kfree(void *ptr)
     struct chunk_hdr *h;
     daif_state s;
 
-    if (!ptr)
+    if (!ptr) {
+        kprintf("kfree(NULL) from %p\n", __builtin_return_address(0));
         panic("kfree(NULL)");
+    }
 
     spin_lock_irqsave(&kheap_lock, &s);
 

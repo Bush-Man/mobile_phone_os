@@ -663,6 +663,7 @@ static struct vnode *inode_shell(struct fat_inode *in)
     vn->type = in->is_dir ? V_DIR : V_FILE;
     vn->priv = in;
     vn->ino = in->first_clus;
+    vn->refs = 1;                       /* caller (or mount) owns it  */
     return vn;
 }
 

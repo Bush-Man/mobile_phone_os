@@ -92,7 +92,9 @@ static void test_brk(void)
     char *cur = sbrk(0);
     char *nxt = sbrk(32);
 
-    CHECK(nxt != (void *)-1 && nxt > cur, "sbrk: grow");
+    /* Unix contract: sbrk returns the OLD break, so sbrk(32) hands
+     * back the same address sbrk(0) just reported                  */
+    CHECK(nxt != (void *)-1 && nxt == cur, "sbrk: grow");
     CHECK(sbrk(0) >= nxt + 32, "sbrk: top advanced");
 }
 

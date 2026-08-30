@@ -117,7 +117,9 @@ int udp_bind_raw(uint16_t port, udp_raw_fn fn, void *arg)
 int udp_send(struct udp_pcb *pcb, const void *buf, unsigned len)
 {
     struct netif *nif = netif_route(pcb->remote_ip);
-    uint8_t pkt[sizeof(struct udp_hdr) + 512];
+    /* 20 bytes of headroom: ip4_output writes its header at buf-20 */
+    uint8_t frame[20 + sizeof(struct udp_hdr) + 512];
+    uint8_t *pkt = frame + 20;
     struct udp_hdr *h = (struct udp_hdr *)pkt;
     uint16_t total;
     uint16_t csum;

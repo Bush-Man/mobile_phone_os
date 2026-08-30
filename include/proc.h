@@ -212,6 +212,13 @@ unsigned proc_psinfo_fill(struct psinfo_entry *ents, unsigned max);
 int proc_kernel_reap(int pid, int *code_out);
 
 /*
+ * Blocking wrapper around proc_kernel_reap for kernel tasks: polls
+ * until the process is reaped or `timeout_ms` elapses. Returns the pid,
+ * -ECHILD if no such process, or -ETIMEDOUT.
+ */
+int proc_kernel_wait(int pid, int *code_out, uint32_t timeout_ms);
+
+/*
  * Threads within a process (pthread-lite backend). The new thread
  * runs at `pc` on its own user stack top `usp` with x0 = `arg`; its
  * task slot carries a dedicated kmalloc'd EL1 stack. Returns the

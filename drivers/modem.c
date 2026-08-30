@@ -63,6 +63,7 @@ static void modem_sms_event_all(const char *sender, const char *text)
 
 static volatile bool q_done;
 static volatile int  q_status;
+static char          q_store[AT_RESP_MAX][AT_LINE_MAX];
 static const char   *q_lines[AT_RESP_MAX];
 static unsigned      q_nlines;
 
@@ -72,9 +73,27 @@ static void q_collect(int status, const char *const *lines,
     (void)arg;
     q_status = status;
     q_nlines = nlines < AT_RESP_MAX ? nlines : AT_RESP_MAX;
-    for (unsigned i = 0; i < q_nlines; i++)
-        q_lines[i] = lines[i];
+    /* copy: the engine reuses resp_store on the next submit */
+    for (unsigned i = 0; i < q_nlines; i++) {
+        size_t n = strlen(lines[i]);
+
+        if (n >= AT_LINE_MAX)
+            n = AT_LINE_MAX - 1u;
+        memcpy(q_store[i], lines[i], n);
+        q_store[i][n] = 0;
+        q_lines[i] = q_store[i];
+    }
     q_done = true;
+}
+
+/* clear the completion state before every submit: a stale q_done
+ * makes the next q_wait() return instantly with the previous
+ * command's lines while the engine is still busy               */
+static void q_reset(void)
+{
+    q_done   = false;
+    q_nlines = 0;
+    q_status = AT_ERROR;
 }
 
 static int q_wait(uint32_t timeout_ms)
@@ -90,11 +109,46 @@ static int q_wait(uint32_t timeout_ms)
     return 0;
 }
 
+/* submit + wait, driving the FSM from the final AT status */
+static int q_call_cmd(const char *cmd, uint32_t timeout_ms)
+{
+    q_reset();
+    if (at_engine_submit(&eng, cmd, timeout_ms, 1u, q_collect, NULL))
+        return -1;
+    if (q_wait(timeout_ms + 1000u))
+        return -1;
+
+    /* the response terminator drives the call FSM: ATH's OK retires
+     * CALL_ENDING, ATA's OK promotes CALL_INCOMING to CALL_ACTIVE */
+    {
+        enum call_event ev = (q_status == AT_OK) ? CALL_EV_OK
+                                                : CALL_EV_ERROR;
+        enum call_state before = call_ctl_state();
+
+        if (q_status == AT_OK && before == CALL_INCOMING)
+            ev = CALL_EV_ANSWER;
+        call_ctl_apply(ev);
+        if (call_ctl_state() != before)
+            modem_call_event_all(ev);
+    }
+    return q_status == AT_OK ? 0 : -1;
+}
+
 /* ---- URC + response classification ------------------------------------------------ */
 
 static void urc_line(const char *line, void *arg)
 {
+    extern void modem_sms_sink_line(const char *line);
+    extern bool modem_sms_cmt_pending(void);
+
     (void)arg;
+
+    /* the hex PDU body arrives as the URC after the +CMT: header;
+     * it must reach the sink before any other classification    */
+    if (modem_sms_cmt_pending()) {
+        modem_sms_sink_line(line);
+        return;
+    }
 
     if (!strncmp(line, "RING", 4)) {
         call_ctl_apply(CALL_EV_INCOMING);
@@ -123,8 +177,6 @@ static void urc_line(const char *line, void *arg)
          * the PDU hex follows on the next line; the engine delivers
          * it as the following URC -- the sms sink pairs them.
          */
-        extern void modem_sms_sink_line(const char *line);
-
         modem_sms_sink_line(line);
         return;
     }
@@ -208,6 +260,7 @@ int modem_dial(const char *number)
         return -1;
 
     call_ctl_apply(CALL_EV_DIAL);
+    modem_call_event_all(CALL_EV_DIAL);
     {
         const char *pre = "ATD";
         size_t i = 0;
@@ -218,18 +271,14 @@ int modem_dial(const char *number)
             cmd[i++] = *number++;
         cmd[i] = 0;
     }
-    if (at_engine_submit(&eng, cmd, 5000u, 1u, q_collect, NULL))
-        return -1;
-    return q_wait(6000u);
+    return q_call_cmd(cmd, 5000u);
 }
 
 int modem_answer(void)
 {
     if (!inited || call_ctl_state() != CALL_INCOMING)
         return -1;
-    if (at_engine_submit(&eng, "ATA", 3000u, 1u, q_collect, NULL))
-        return -1;
-    return q_wait(4000u);
+    return q_call_cmd("ATA", 3000u);
 }
 
 int modem_hangup(void)
@@ -237,13 +286,13 @@ int modem_hangup(void)
     if (!inited)
         return -1;
     call_ctl_apply(CALL_EV_HANGUP_LOCAL);
-    if (at_engine_submit(&eng, "ATH", 2000u, 1u, q_collect, NULL))
-        return -1;
-    return q_wait(3000u);
+    modem_call_event_all(CALL_EV_HANGUP_LOCAL);
+    return q_call_cmd("ATH", 2000u);
 }
 
 static int q_submit_wait(const char *cmd, uint32_t timeout_ms)
 {
+    q_reset();
     if (at_engine_submit(&eng, cmd, timeout_ms, 1u, q_collect, NULL))
         return -1;
     return q_wait(timeout_ms + 1000u);
@@ -261,6 +310,8 @@ static long atoi_mod(const char *s)
     long v = 0;
     bool neg = false;
 
+    while (*s == ' ')                   /* "+CSQ: 18,0" -> skip SP    */
+        s++;
     if (*s == '-') {
         neg = true;
         s++;
@@ -295,8 +346,16 @@ int modem_query_reg(enum reg_status *out, uint32_t timeout_ms)
 
             if (comma)
                 stat = atoi_mod(comma + 1);
-            *out = (stat >= 0 && stat <= 5)
-                       ? (enum reg_status)stat : REG_UNKNOWN;
+            /* 3GPP 27.007 <stat> codes do not line up with the
+             * enum's declaration order, so map them explicitly */
+            switch (stat) {
+            case 0:  *out = REG_NOT_SEARCHED; break;
+            case 1:  *out = REG_HOME;         break;
+            case 2:  *out = REG_SEARCHING;    break;
+            case 3:  *out = REG_DENIED;       break;
+            case 5:  *out = REG_ROAMING;      break;
+            default: *out = REG_UNKNOWN;      break;
+            }
             return 0;
         }
     }
@@ -313,9 +372,10 @@ int modem_query_signal(struct modem_signal *out, uint32_t timeout_ms)
     out->ber  = 99u;
     for (unsigned i = 0; i < q_nlines; i++) {
         if (line_prefix(q_lines[i], "+CSQ:")) {
+            const char *colon = strchr(q_lines[i], ':');
             const char *comma = strchr(q_lines[i], ',');
 
-            out->rssi = (uint8_t)atoi_mod(q_lines[i] + 5);
+            out->rssi = (uint8_t)atoi_mod(colon + 1);
             if (comma)
                 out->ber = (uint8_t)atoi_mod(comma + 1);
             return 0;
@@ -328,7 +388,7 @@ int modem_query_signal(struct modem_signal *out, uint32_t timeout_ms)
 /* ---- sms (item 67) ------------------------------------------------------------ */
 
 static struct {
-    bool     sending;               /* two-stage CMGS in progress  */
+    volatile bool sending;          /* two-stage CMGS in progress  */
     char     to[SMS_ADDR_MAX];
     char     text[SMS_TEXT_MAX];
     volatile bool sent_ok;
@@ -343,6 +403,7 @@ static void cmgs_response(int status, const char *const *lines,
     for (unsigned i = 0; i < nlines && !sms_tx.mr; i++)
         if (line_prefix(lines[i], "+CMGS:"))
             sms_tx.mr = (int)atoi_mod(lines[i] + 6);
+    sms_tx.sending = false;         /* stage 2 done: release waiter */
 }
 
 static void cmgs_prompt(int status, const char *const *lines,
@@ -362,6 +423,7 @@ static void cmgs_prompt(int status, const char *const *lines,
                                 sizeof(pdu));
     if (plen < 0) {
         sms_tx.sent_ok = false;
+        sms_tx.sending = false;
         q_done = true;
         q_status = AT_ERROR;
         return;
@@ -379,6 +441,7 @@ static void cmgs_prompt(int status, const char *const *lines,
     if (at_engine_submit(&eng, body, 5000u, 0u,
                          cmgs_response, NULL)) {
         sms_tx.sent_ok = false;
+        sms_tx.sending = false;
         q_done = true;
         q_status = AT_ERROR;
     }
@@ -430,17 +493,27 @@ int modem_sms_send(const char *to, const char *text)
     }
 
     sms_tx.sent_ok = false;
+    sms_tx.sending = true;
     if (at_engine_submit(&eng, cmd, 3000u, 0u,
-                         cmgs_prompt, NULL))
+                         cmgs_prompt, NULL)) {
+        sms_tx.sending = false;
         return -1;
+    }
 
-    /* wait for the two-stage flow to finish                       */
+    /*
+     * Wait for stage 2 to report, not for eng.pending to clear:
+     * between the prompt callback returning and its follow-up submit
+     * the engine is momentarily idle, and another task's command can
+     * slip in and make `pending` mean something else entirely.
+     */
     {
         uint64_t deadline = time_uptime_ms() + 12000u;
 
-        while (eng.pending) {
-            if ((long)(time_uptime_ms() - deadline) >= 0)
+        while (sms_tx.sending) {
+            if ((long)(time_uptime_ms() - deadline) >= 0) {
+                sms_tx.sending = false;
                 return -1;
+            }
             msleep(2);
         }
     }
@@ -486,6 +559,11 @@ static void cmt_finish(void)
         modem_sms_event_all(sender, text);
     }
     cmt.await_pdu = false;
+}
+
+bool modem_sms_cmt_pending(void)
+{
+    return cmt.await_pdu;
 }
 
 void modem_sms_sink_line(const char *line)

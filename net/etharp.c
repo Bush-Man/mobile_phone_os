@@ -140,14 +140,8 @@ static void arp_build(uint8_t *pkt, uint16_t op, const uint8_t *src_hw,
 static void arp_send_raw(struct netif *nif, const uint8_t *dst_hw,
                          const uint8_t *arp_pkt)
 {
-    uint8_t frame[ETH_HDR_LEN + 28];
-
-    memcpy(&frame[0], dst_hw, 6);
-    memcpy(&frame[6], nif->hwaddr, 6);
-    put16(&frame[12], ETHERTYPE_ARP);
-    memcpy(&frame[ETH_HDR_LEN], arp_pkt, 28);
-    nif->link_out(nif, dst_hw, ETHERTYPE_ARP, frame,
-                  ETH_HDR_LEN + 28);
+    /* link_out builds the Ethernet header: hand it the payload only */
+    nif->link_out(nif, dst_hw, ETHERTYPE_ARP, arp_pkt, 28);
 }
 
 static void arp_request(struct netif *nif, uint32_t target_ip)
@@ -181,6 +175,16 @@ void arp_input(const uint8_t *pkt, unsigned len, struct netif *nif)
     now = time_uptime_ms();
     cache_put(sender_ip, &pkt[8], now);
 
+    /* a queued frame waiting on this address can go out now       */
+    if (pending.used && pending.ip == sender_ip) {
+        struct netif *out = pending.nif;
+        unsigned plen = pending.len;
+
+        pending.used = false;
+        out->link_out(out, &pkt[8], ETHERTYPE_IPV4,
+                      pending.frame, plen);
+    }
+
     if (op == ARP_REQUEST && target_ip == nif->ip_addr) {
         uint8_t reply[28];
 
@@ -209,35 +213,25 @@ int arp_send_ip(struct netif *nif, uint32_t dst_ip,
                 const void *buf, unsigned len)
 {
     uint8_t hw[ETH_HWADDR_LEN];
-    uint8_t frame[ETH_HDR_LEN + ETH_MTU];
 
     if (len > ETH_MTU)
         return -1;
 
-    if (arp_lookup(dst_ip, hw) == 0) {
-        memcpy(&frame[0], hw, 6);
-        memcpy(&frame[6], nif->hwaddr, 6);
-        put16(&frame[12], ETHERTYPE_IPV4);
-        memcpy(&frame[ETH_HDR_LEN], buf, len);
-        return nif->link_out(nif, hw, ETHERTYPE_IPV4, frame,
-                             ETH_HDR_LEN + len);
-    }
+    if (arp_lookup(dst_ip, hw) == 0)
+        return nif->link_out(nif, hw, ETHERTYPE_IPV4, buf, len);
 
-    /* unresolved: queue the frame (single slot) and request        */
+    /* unresolved: queue the payload (single slot) and request       */
     if (pending.used && pending.ip == dst_ip)
         return -1;                      /* already waiting            */
 
     pending.used = true;
     pending.ip   = dst_ip;
     pending.nif  = nif;
-    pending.len  = len + ETH_HDR_LEN;
+    pending.len  = len;
     pending.sent_ms = 0;
     pending.tries   = 0;
 
-    memcpy(&pending.frame[0], zero_hw, 6);
-    memcpy(&pending.frame[6], nif->hwaddr, 6);
-    put16(&pending.frame[12], ETHERTYPE_IPV4);
-    memcpy(&pending.frame[ETH_HDR_LEN], buf, len);
+    memcpy(pending.frame, buf, len);
 
     arp_request(nif, dst_ip);
     return 0;

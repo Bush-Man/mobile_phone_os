@@ -83,7 +83,7 @@ static void sockaddr_fill(struct sa_in *sa, u32 ip_be, u16 port_be)
 
 void _start(unsigned long argc, char **argv)
 {
-    struct sa_in any, loop;
+    struct sa_in loop;
     int srv, conn, cli;
     static const char payload[] = "netcli-tcp-loopback";
     char buf[64];
@@ -107,10 +107,16 @@ void _start(unsigned long argc, char **argv)
     }
     nl();
 
-    sockaddr_fill(&any, 0, 0);
-    /* 127.0.0.1 BE bytes, port 7307 BE (0x1c8b) */
-    sockaddr_fill(&loop, 0x0100007fu, 0x1c8bu);
+    /*
+     * The kernel stores IPv4 as (a | b<<8 | c<<16 | d<<24), i.e. the
+     * dotted quad in ascending byte order, and sockaddr_parse takes
+     * sa.addr verbatim. Ports it does byte-swap, so those stay BE.
+     * 127.0.0.1 -> 0x0100007f; port 7307 -> 0x8b1c swapped.
+     */
+    sockaddr_fill(&loop, 0x0100007fu, 0x8b1cu);
 
+    /* the listener must own :7307 -- connect() targets that port,
+     * and tcp_bind hands out an ephemeral one for port 0            */
     srv = (int)sc4(SYS_socket, SOCK_STREAM, 0, 0, 0);
     if (srv < 0) {
         out("netcli: socket failed");
@@ -119,7 +125,7 @@ void _start(unsigned long argc, char **argv)
         for (;;)
             ;
     }
-    if (sc4(SYS_bind, srv, (i64)&any, 16, 0)) {
+    if (sc4(SYS_bind, srv, (i64)&loop, 16, 0)) {
         out("netcli: bind failed");
         nl();
         sc4(SYS_exit, 95, 0, 0, 0);

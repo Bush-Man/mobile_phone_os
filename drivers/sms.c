@@ -208,10 +208,10 @@ int sms_parse_deliver_pdu(const uint8_t *pdu, unsigned len,
     o += 2u;                            /* PID + DCS                  */
     o += 7u;                            /* SCTS                       */
 
+    /* for a 7-bit DCS the UDL is a septet count already; the packed
+     * body occupies ceil(udl * 7 / 8) octets                       */
     udl     = pdu[o++];
-    septets = udl * 7u / 8u;
-    if (septets == 0u)
-        septets = udl;
+    septets = udl;
     if (o + (udl * 7u + 7u) / 8u > len)
         return -1;
 

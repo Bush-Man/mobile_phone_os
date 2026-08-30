@@ -216,6 +216,7 @@ static struct inet_sock *iso_alloc(int type)
     iso->in_use = true;
     iso->type   = type;
     iso->vn     = vn;
+    vn->priv    = iso;              /* iso_of_fd walks back through it */
     if (type == 1) {
         iso->tp = tcp_alloc();
         if (!iso->tp) {
@@ -328,6 +329,8 @@ long net_sys_accept(uint64_t fd, uint64_t addr_p, uint64_t len_p)
         tcp_free(child);
         return -24;
     }
+    tcp_free(ciso->tp);             /* iso_alloc's spare pcb: the
+                                     * accepted child replaces it   */
     ciso->tp   = child;
     ciso->state = SS_CONNECTED;
     ciso->tp->wq = &ciso->wq;

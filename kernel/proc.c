@@ -935,17 +935,38 @@ int proc_kernel_reap(int pid, int *code_out)
     return pid;
 }
 
+/*
+ * Blocking form of proc_kernel_reap for kernel tasks: polls until the
+ * child settles or the deadline passes. Kernel tasks have no proc, so
+ * they cannot use the reap waitqueue (which wakes process waiters).
+ */
+int proc_kernel_wait(int pid, int *code_out, uint32_t timeout_ms)
+{
+    uint64_t deadline = time_uptime_ms() + timeout_ms;
+
+    for (;;) {
+        int rc = proc_kernel_reap(pid, code_out);
+
+        if (rc != 0)
+            return rc;
+        if ((long)(time_uptime_ms() - deadline) >= 0)
+            return -ETIMEDOUT;
+        msleep(10);
+    }
+}
+
 /* predicate for wait_sleep_when: some child is reapable */
 struct reap_check {
     struct proc *who;
     int want;
 };
 
+/* wait_sleep_when() parks while the predicate is TRUE */
 static bool reapable_exists(void *ctx)
 {
     struct reap_check *rc = ctx;
 
-    return find_zombie(rc->who, rc->want) != NULL;   /* true = keep waiting */
+    return find_zombie(rc->who, rc->want) == NULL;
 }
 
 int proc_do_waitpid(int want, int *code_out)
@@ -1117,6 +1138,15 @@ int proc_do_fork(struct trap_frame *tf)
     child->brk = parent->brk;
     child->brk_floor = parent->brk_floor;   /* phase 14: heap floor  */
     child->mmap_next = parent->mmap_next;   /* private maps inherit */
+
+    /* phase 8: shm stays shared across fork -- vmm_copy_space skips
+     * the SHM L0 slot, so the frames are re-mapped rather than copied */
+    if (ipc_proc_fork(child, parent)) {
+        space_destroy(child);
+        kfree(child->kstack);
+        kfree(child);
+        return -ENOMEM;
+    }
 
     /* phase 7: fork shares open file descriptions (dup refs)       */
     vfs_proc_fds_inherit(child, parent);

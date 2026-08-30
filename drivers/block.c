@@ -95,12 +95,19 @@ int block_register(struct block_device *bd)
     }
     spin_unlock(&blk_lock);
 
-    if (r == 0)
-        kprintf("block: %s %llu MiB (%u sect/req max)\n",
-                bd->name,
-                (unsigned long long)(bd->capacity_sectors >>
-                                     (20 - BLK_SECTOR_SHIFT)),
-                bd->max_sectors);
+    if (r == 0) {
+        uint64_t kib = bd->capacity_sectors >> (10 - BLK_SECTOR_SHIFT);
+
+        /* small scratch devices (the A/B ramdisk) round to 0 MiB */
+        if (kib >= 1024u)
+            kprintf("block: %s %llu MiB (%u sect/req max)\n",
+                    bd->name, (unsigned long long)(kib >> 10),
+                    bd->max_sectors);
+        else
+            kprintf("block: %s %llu KiB (%u sect/req max)\n",
+                    bd->name, (unsigned long long)kib,
+                    bd->max_sectors);
+    }
     return r;
 }
 
@@ -253,44 +260,93 @@ int block_submit(struct blk_request *req)
     return rc;
 }
 
+/*
+ * Both entry points take a byte count, but the driver/cache layer
+ * always moves whole sectors. A trailing partial sector therefore has
+ * to be bounced through a sector-sized buffer: reading straight into
+ * the caller's short buffer would scribble past its end, and writing
+ * straight out of it would leak whatever follows it.
+ */
 int block_read(struct block_device *bd, uint64_t lba,
                void *buf, unsigned bytes)
 {
     struct blk_request req;
-    unsigned sect = (bytes + BLK_SECTOR_SIZE - 1) / BLK_SECTOR_SIZE;
+    unsigned whole = bytes / BLK_SECTOR_SIZE;
+    unsigned tail = bytes % BLK_SECTOR_SIZE;
+    unsigned sect = whole + (tail ? 1u : 0u);
 
     if (!bd || bytes == 0)
         return -1;
     if (lba + sect > bd->capacity_sectors)
         return -1;
 
-    memset(&req, 0, sizeof(req));
-    req.bd = bd;
-    req.lba = lba;
-    req.nsect = sect;
-    req.buf = buf;
-    req.write = false;
-    return block_submit(&req);
+    if (whole) {
+        memset(&req, 0, sizeof(req));
+        req.bd = bd;
+        req.lba = lba;
+        req.nsect = whole;
+        req.buf = buf;
+        req.write = false;
+        if (block_submit(&req))
+            return -1;
+    }
+    if (tail) {
+        uint8_t sec[BLK_SECTOR_SIZE];
+
+        memset(&req, 0, sizeof(req));
+        req.bd = bd;
+        req.lba = lba + whole;
+        req.nsect = 1u;
+        req.buf = sec;
+        req.write = false;
+        if (block_submit(&req))
+            return -1;
+        memcpy((uint8_t *)buf + whole * BLK_SECTOR_SIZE, sec, tail);
+    }
+    return 0;
 }
 
 int block_write(struct block_device *bd, uint64_t lba,
                 const void *buf, unsigned bytes)
 {
     struct blk_request req;
-    unsigned sect = (bytes + BLK_SECTOR_SIZE - 1) / BLK_SECTOR_SIZE;
+    unsigned whole = bytes / BLK_SECTOR_SIZE;
+    unsigned tail = bytes % BLK_SECTOR_SIZE;
+    unsigned sect = whole + (tail ? 1u : 0u);
 
     if (!bd || bytes == 0)
         return -1;
     if (lba + sect > bd->capacity_sectors)
         return -1;
 
-    memset(&req, 0, sizeof(req));
-    req.bd = bd;
-    req.lba = lba;
-    req.nsect = sect;
-    req.buf = (void *)buf;
-    req.write = true;
-    return block_submit(&req);
+    if (whole) {
+        memset(&req, 0, sizeof(req));
+        req.bd = bd;
+        req.lba = lba;
+        req.nsect = whole;
+        req.buf = (void *)buf;
+        req.write = true;
+        if (block_submit(&req))
+            return -1;
+    }
+    if (tail) {
+        uint8_t sec[BLK_SECTOR_SIZE];
+
+        /* zero-pad the short tail rather than trailing stack bytes */
+        memset(sec, 0, sizeof(sec));
+        memcpy(sec, (const uint8_t *)buf + whole * BLK_SECTOR_SIZE,
+               tail);
+
+        memset(&req, 0, sizeof(req));
+        req.bd = bd;
+        req.lba = lba + whole;
+        req.nsect = 1u;
+        req.buf = sec;
+        req.write = true;
+        if (block_submit(&req))
+            return -1;
+    }
+    return 0;
 }
 
 /* ---- MBR / EBR ---------------------------------------------------------------------------------- */

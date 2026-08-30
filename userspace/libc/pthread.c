@@ -25,11 +25,7 @@ struct tcb {
     void *retval;
     volatile int done;
     void *stack_base;           /* for a future free-on-join         */
-};
-
-struct iarg {                   /* passed to the trampoline in x0    */
-    struct tcb *tcb;
-    volatile int armed;         /* set before SYS_clone returns...   */
+    volatile int armed;         /* set once the creator has published */
 };
 
 /*
@@ -42,11 +38,9 @@ static void spin_until(volatile int *flag)
         sleep_ms(1);
 }
 
-static void thread_trampoline(struct iarg *ia)
+static void thread_trampoline(struct tcb *t)
 {
-    struct tcb *t = ia->tcb;
-
-    spin_until(&ia->armed);
+    spin_until(&t->armed);
     t->retval = t->fn(t->arg);
     __atomic_store_n(&t->done, 1, __ATOMIC_RELEASE);
     _sys0(SYS_thread_exit);     /* parks this task for good          */
@@ -58,7 +52,6 @@ int pthread_create(pthread_t *t_out, void *attr,
                    void *(*fn)(void *), void *arg)
 {
     struct tcb *t;
-    struct iarg ia;
     i64 tid;
 
     (void)attr;
@@ -75,17 +68,17 @@ int pthread_create(pthread_t *t_out, void *attr,
     t->done = 0;
     t->stack_base = t;
 
-    /* iarg lives on OUR stack: the trampoline spins on `armed`
-     * until we publish this tcb, then runs for real              */
-    ia.tcb = t;
-    ia.armed = 0;
+    /* `armed` lives in the tcb, i.e. in the thread's own mapping:
+     * anything on OUR stack is gone the moment we return, and the
+     * next call reuses the slot                                   */
+    t->armed = 0;
 
     tid = _sys3(SYS_clone, (i64)thread_trampoline,
-                (i64)((char *)t + THREAD_STACK), (i64)&ia);
+                (i64)((char *)t + THREAD_STACK), (i64)t);
     if (tid < 0) {
         return -1;
     }
-    ia.armed = 1;
+    __atomic_store_n(&t->armed, 1, __ATOMIC_RELEASE);
     *t_out = (pthread_t)t;
     return 0;
 }

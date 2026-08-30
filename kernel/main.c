@@ -140,7 +140,7 @@ static void process_demo_task(void *arg)
         task_exit();
     }
 
-    rc = proc_do_waitpid(pid, &code);
+    rc = proc_kernel_wait(pid, &code, 10000u);
     if (rc == pid)
         kprintf("[demo] hello exited with code %d\n", code);
     else

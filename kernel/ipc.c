@@ -630,6 +630,48 @@ int shm_detach(uint64_t va)
     return found;
 }
 
+/*
+ * fork(): re-map the parent's shm attachments into the child at the
+ * same VAs. proc_do_fork's vmm_copy_space deliberately skips the SHM
+ * L0 slot (it deep-copies leaf frames, which would silently un-share
+ * the object), so the frames have to be re-mapped here instead.
+ */
+int ipc_proc_fork(struct proc *child, struct proc *parent)
+{
+    daif_state s;
+    int r = 0;
+
+    if (!child || !parent)
+        return -EINVAL;
+
+    spin_lock_irqsave(&ipc_lock, &s);
+    for (unsigned i = 0; i < PROC_SHM_MAX; i++) {
+        uint64_t va = parent->shm_maps[i].va;
+        struct shm_obj *o;
+        int id = parent->shm_maps[i].id;
+
+        if (!va)
+            continue;
+        if (id < 0 || (unsigned)id >= SHM_OBJS_MAX)
+            continue;
+        o = &shm_pool[id];
+        if (!o->used)
+            continue;
+
+        if (shm_map_range(o, va, child->root_pa)) {
+            r = -ENOMEM;
+            break;
+        }
+        child->shm_maps[i] = parent->shm_maps[i];
+        o->attaches++;
+    }
+    if (r)
+        for (unsigned i = 0; i < PROC_SHM_MAX; i++)
+            shm_do_detach(child, i);     /* no partial inheritance */
+    spin_unlock_irqrestore(&ipc_lock, s);
+    return r;
+}
+
 unsigned shm_object_refs(int id)
 {
     unsigned n = 0;

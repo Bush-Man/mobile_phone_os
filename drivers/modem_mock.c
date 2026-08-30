@@ -157,7 +157,23 @@ bool modem_mock_attached(void)
 
 void modem_mock_inject_urc(const char *line)
 {
-    mk_sched(line, 0u);
+    char buf[AT_LINE_MAX];
+    size_t n = strlen(line);
+
+    /* the engine dispatches on '\n': a caller-supplied line without
+     * one (the selftests' bare hex PDU) would sit in the assembly
+     * buffer forever, so terminate it here */
+    if (n && line[n - 1] == '\n') {
+        mk_sched(line, 0u);
+        return;
+    }
+    if (n > sizeof(buf) - 3u)
+        n = sizeof(buf) - 3u;
+    memcpy(buf, line, n);
+    buf[n++] = '\r';
+    buf[n++] = '\n';
+    buf[n] = 0;
+    mk_sched(buf, 0u);
 }
 
 /* transport constructor exported for the modem layer              */

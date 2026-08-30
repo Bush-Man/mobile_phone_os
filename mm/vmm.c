@@ -31,7 +31,14 @@
 /* ---- descriptor encoding -------------------------------------------- */
 
 #define PTE_VALID     (1ull << 0)
-#define PTE_TABLE     (1ull << 1)   /* 0b11 = next-level table          */
+/*
+ * Bit 1 is the descriptor-type bit. Its meaning depends on the level:
+ * at levels 0..2, 0b11 is a table and 0b01 is a block; at level 3,
+ * 0b11 is the only legal page encoding and 0b01 is RESERVED (the
+ * hardware raises a level-3 translation fault). So L3 leaves must set
+ * this bit, and block descriptors must clear it.
+ */
+#define PTE_TABLE     (1ull << 1)
 #define PTE_ATTR(n)   ((n) << 2)
 #define ATTR_NORMAL   0ull
 #define ATTR_DEVICE   1ull
@@ -107,8 +114,8 @@ static uint64_t leaf_desc(paddr_t pa, unsigned flags)
                                : PTE_ATTR(ATTR_NORMAL);
     ng   = (flags & VM_USER) ? PTE_NG : 0;
 
-    return PTE_VALID | attr | ap | PTE_SH_INNER | PTE_AF | ng | xn |
-           (pa & ~(PAGE_SIZE - 1));
+    return PTE_VALID | PTE_TABLE | attr | ap | PTE_SH_INNER | PTE_AF |
+           ng | xn | (pa & ~(PAGE_SIZE - 1));
 }
 
 static uint64_t block_desc(paddr_t pa, unsigned flags)
@@ -547,11 +554,12 @@ static void free_subtree(uint64_t *t, unsigned lvl)
 
         if (!(d & PTE_VALID))
             continue;
-        if ((d & PTE_TABLE) && lvl < 3) {
+        /* bit 1 only distinguishes table from block above level 3;
+         * at level 3 every valid descriptor is a page */
+        if (lvl < 3 && (d & PTE_TABLE))
             free_subtree(table_ptr(d), lvl + 1);
-        } else if (!(d & PTE_TABLE)) {
+        else
             pmm_free(d & PT_ADDR_MASK);         /* data page or block */
-        }
     }
     pmm_free((paddr_t)(uintptr_t)t);
 }
